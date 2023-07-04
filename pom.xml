@@ -14,7 +14,7 @@
     <description>ByBit trading support for roboquant algorithmic trading platform</description>
 
     <properties>
-        <kotlin.version>1.8.22</kotlin.version>
+        <kotlin.version>1.9.0-RC</kotlin.version>
     </properties>
 
     <build>
@@ -40,6 +40,23 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- We don't use Java, so lets disable the Java compiler plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>11</source>
+                    <target>11</target>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+
         </plugins>
     </build>
 

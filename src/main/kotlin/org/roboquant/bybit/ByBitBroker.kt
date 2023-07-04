@@ -31,7 +31,7 @@ import java.util.*
  * Implementation of the broker interface for the ByBit exchange. This enables paper- and live-trading of
  * cryptocurrencies on the ByBit exchange. This broker only supports assets of the type [AssetType.CRYPTO].
  *
- * @param baseCurrencyCode The base currency to use
+ * @param baseCurrency The base currency to use
  * @param configure additional configure logic, default is to do nothing
  *
  * @constructor

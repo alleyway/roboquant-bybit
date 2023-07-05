@@ -1,0 +1,10 @@
+build/
+.idea/
+*.iml
+.DS_Store
+*.avro
+target/
+*.jfr
+*.log
+pom.xml.versionsBackup
+

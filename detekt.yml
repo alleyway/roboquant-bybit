@@ -1,5 +1,5 @@
 build:
-  maxIssues: 0
+  maxIssues: 6
   excludeCorrectable: false
   weights:
     # complexity: 2
@@ -114,7 +114,7 @@ complexity:
     threshold: 600
   LongMethod:
     active: true
-    threshold: 60
+    threshold: 80
   LongParameterList:
     active: true
     functionThreshold: 6

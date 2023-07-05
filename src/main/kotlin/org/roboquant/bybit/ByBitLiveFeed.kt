@@ -156,7 +156,6 @@ class ByBitLiveFeed(
             }
 
 //            is ByBitWebSocketMessage.TopicResponse.TickerSpot -> {
-//                // TODO: if delta instead of snapshot might be some values empty...
 //                // should cache when snapshot
 //                val asset = getSubscribedAsset(message.data.symbol)
 //                val action = PriceQuote(

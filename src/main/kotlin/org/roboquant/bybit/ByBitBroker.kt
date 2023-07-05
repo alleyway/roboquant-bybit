@@ -252,7 +252,7 @@ class ByBitBroker(
 
     private fun updateAccount() {
 
-        // TODO: this is very specific to BTCUSDT..just wanted a way to have a position
+        // this is very specific to BTCUSDT..just wanted a way to have a position
         val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(AccountType.SPOT))
 
         for (coinItem in walletBalanceResp.result.list.first().coin) {

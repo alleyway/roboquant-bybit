@@ -22,6 +22,20 @@
         <slf4j.version>2.0.7</slf4j.version>
     </properties>
 
+    <repositories>
+        <repository>
+            <id>mavenCentral</id>
+            <url>https://repo1.maven.org/maven2/</url>
+        </repository>
+        <repository>
+            <id>ossrh</id>
+            <url>https://s01.oss.sonatype.org/content/repositories/snapshots</url>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
     <build>
         <sourceDirectory>${basedir}/src/main/kotlin</sourceDirectory>
         <testSourceDirectory>${basedir}/src/test/kotlin</testSourceDirectory>

@@ -14,10 +14,18 @@
     <description>ByBit trading support for roboquant algorithmic trading platform</description>
 
     <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <kotlin.code.style>official</kotlin.code.style>
+        <kotlin.compiler.jvmTarget>11</kotlin.compiler.jvmTarget>
+        <kotlin.compiler.incremental>false</kotlin.compiler.incremental>
         <kotlin.version>1.9.0-RC</kotlin.version>
+        <slf4j.version>2.0.7</slf4j.version>
     </properties>
 
     <build>
+        <sourceDirectory>${basedir}/src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>${basedir}/src/test/kotlin</testSourceDirectory>
+
         <plugins>
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
@@ -56,11 +64,40 @@
                     </execution>
                 </executions>
             </plugin>
-
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>libs/</classpathPrefix>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>com.github.ozsie</groupId>
+                <artifactId>detekt-maven-plugin</artifactId>
+                <version>1.22.0</version>
+                <configuration>
+                    <config>detekt.yml</config>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
     <dependencies>
+
         <dependency>
             <artifactId>roboquant</artifactId>
             <groupId>org.roboquant</groupId>
@@ -76,6 +113,30 @@
             <artifactId>mordant-jvm</artifactId>
             <version>2.0.0-beta13</version>
         </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-test-junit5</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
 </project>

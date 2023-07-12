@@ -3,7 +3,6 @@ package org.roboquant.bybit
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.websocket.*
 import kotlinx.coroutines.runBlocking
-import org.roboquant.bybit.ByBit.availableAssets
 import org.roboquant.bybit.ByBit.getRestClient
 import org.roboquant.bybit.ByBit.getWebSocketClient
 import org.roboquant.common.*
@@ -77,9 +76,9 @@ class ByBitLiveFeed(
         }
     }
 
-    val availableAssets: Map<String, Asset> by lazy {
-        availableAssets(client)
-    }
+//    val availableAssets: Map<String, Asset> by lazy {
+//        availableAssets(client)
+//    }
 
     override val assets
         get() = subscriptions.values.toSortedSet()
@@ -209,27 +208,45 @@ class ByBitLiveFeed(
      */
     fun subscribe(vararg symbols: String, type: ByBitActionType = ByBitActionType.TRADE) {
 
-//        val idPrefix = when (endpoint) {
-//            ByBitEndpoint.Spot -> {
-//                "spot"
-//            }
-//
-//            ByBitEndpoint.Linear, ByBitEndpoint.Inverse -> {
-//                "linearInverse"
-//            }
-//
-//            ByBitEndpoint.Option -> {
-//                "option"
-//            }
-//
-//            else -> {
-//                "unknown"
-//            }
-//        }
+        val idPrefix = when (endpoint) {
+            ByBitEndpoint.Spot -> {
+                "spot"
+            }
+
+            ByBitEndpoint.Linear, ByBitEndpoint.Inverse -> {
+                "linearInverse"
+            }
+
+            ByBitEndpoint.Option -> {
+                "option"
+            }
+
+            else -> {
+                "unknown"
+            }
+        }
+
+        val currency = when (endpoint) {
+            ByBitEndpoint.Spot,ByBitEndpoint.Linear -> {
+                Currency.USDT
+            }
+
+            ByBitEndpoint.Inverse -> {
+                Currency.USD
+            }
+
+            ByBitEndpoint.Option -> {
+                Currency.USD
+            }
+
+            else -> {
+                Currency.USD
+            }
+        }
 
         val assets = symbols.map {
             Asset(
-                it, AssetType.CRYPTO, exchange = Exchange.CRYPTO, currency = Currency.USDT,
+                it, AssetType.CRYPTO, exchange = Exchange.CRYPTO, currency = currency,
 //                id = "$idPrefix:$it"
             )
         }

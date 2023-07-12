@@ -68,7 +68,9 @@ internal object ByBit {
 
     }
 
-    private fun InstrumentsInfoResultItem.toAsset(): Asset? {
+    private fun InstrumentsInfoResultItem.toAsset(): Asset {
+
+        val currency = Currency.getInstance(this.quoteCoin)
 
         val idPrefix = when(this) {
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemSpot -> {
@@ -92,16 +94,16 @@ internal object ByBit {
         return Asset(
             this.symbol,
             type = AssetType.CRYPTO,
-            currency = Currency.USDT,
+            currency,
             Exchange.CRYPTO,
-            id= "$idPrefix:${symbol}"
+//            id= "$idPrefix:${symbol}"
         )
     }
 
-    internal fun availableAssets(client: ByBitRestClient): Map<String, Asset> {
+    internal fun availableAssets(client: ByBitRestClient, category: Category): Map<String, Asset> {
         val assets = mutableListOf<Asset>()
         val params = InstrumentsInfoParams(
-            category = Category.spot,
+            category,
             limit = 1000,
         )
 

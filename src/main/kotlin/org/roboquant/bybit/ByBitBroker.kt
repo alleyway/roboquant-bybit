@@ -5,6 +5,7 @@ package org.roboquant.bybit
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
 import bybit.sdk.rest.order.*
+import bybit.sdk.rest.position.PositionInfoParams
 import bybit.sdk.shared.AccountType
 import bybit.sdk.shared.Category
 import bybit.sdk.shared.OrderType
@@ -37,7 +38,8 @@ import java.util.*
  * @constructor
  */
 class ByBitBroker(
-    baseCurrency: Currency = Currency.USDT,
+    val category: Category = Category.spot,
+    val baseCurrency: Currency = Currency.USDT,
     configure: ByBitConfig.() -> Unit = {}
 ) : Broker {
 
@@ -69,10 +71,10 @@ class ByBitBroker(
             config.testnet
         )
         wsClient = ByBit.getWebSocketClient(wsOptions, this::handler)
-        assetMap = ByBit.availableAssets(client)
+        assetMap = ByBit.availableAssets(client, category)
 
-        updateAccount()
-
+//        updateAccount()
+        sync()
         wsClient.connectBlocking()
 
         wsClient.subscribeBlocking(
@@ -85,7 +87,77 @@ class ByBitBroker(
 
     }
 
+    fun sync() {
+        _account.portfolio.clear()
+        syncAccountCash()
+
+        when (category) {
+            Category.linear, Category.inverse, Category.option -> {
+                for (position in client.positionClient.getPositionInfoBlocking(
+                    PositionInfoParams(
+                        category,
+                        settleCoin = baseCurrency.currencyCode
+                    )
+                ).result.list) {
+                    assetMap[position.symbol]?.let {
+                        _account.setPosition(
+                            Position(
+                                it,
+                                size = Size(position.positionValue),
+//                                new_average_price = (existing_average_price * existing_shares + added_price * added_shares) / (existing_shares + added_shares)
+                                avgPrice = position.avgPrice.toDouble(),
+                                mktPrice = position.markPrice.toDouble(),
+                                lastUpdate = Instant.ofEpochMilli(position.updatedTime.toLong())
+                            )
+                        )
+                    }
+                }
+            }
+
+            Category.spot -> {
+
+                assetMap.get("BTCUSDT")?.let {
+                    // or should I use equity??
+                    _account.setPosition(
+                        Position(
+                            it,
+                            Size(
+                                _account.cash[Currency.BTC]
+                            )
+                        )
+                    )
+                }
+
+
+            }
+
+            else -> {
+                // do nothing
+            }
+        }
+
+
+        // TODO: Sync the open orders
+//        for (order in _account.orders) {
+//            val brokerOrder = api.getOrder(order.orderId)
+//
+//            // Fictitious implementation
+//            when (brokerOrder.status) {
+//                "RECEIVED" -> _account.updateOrder(order.order, Instant.now(), OrderStatus.ACCEPTED)
+//                "DONE" -> _account.updateOrder(order.order, Instant.now(), OrderStatus.COMPLETED)
+//            }
+//        }
+
+        // Sync buying-power
+//        val buyingPower = api.getBuyingPower()
+//        _account.buyingPower = buyingPower.USD
+
+        // Set the lastUpdate time
+        _account.lastUpdate = Instant.now()
+    }
+
     private fun genOrderLinkId(): String {
+        // should be no more than 36 characters
         return UUID.randomUUID().toString()
     }
 
@@ -104,7 +176,7 @@ class ByBitBroker(
             is ByBitWebSocketMessage.PrivateTopicResponse.Order -> {
 
                 for (order in message.data) {
-                    val orderId = placedOrders[order.orderId] ?: continue
+                    val orderId = placedOrders[order.orderLinkId] ?: continue
                     val state = _account.getOrder(orderId) ?: continue
 
                     when (order.orderStatus) {
@@ -141,38 +213,30 @@ class ByBitBroker(
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Wallet -> {
 
-                for (coinItem in (message.data.filter { it.accountType == AccountType.SPOT }).first().coin) {
-                    if (coinItem.coin == "BTC") {
-                        assetMap.get("BTCUSDT")?.let {
+                // NOTE: for debugging how well ByBitBroker is keeping track of our position
 
+                if (false) {
+                    for (coinItem in (message.data.filter { it.accountType == AccountType.SPOT }).first().coin) {
+                        if (coinItem.coin == "BTC") {
+                            assetMap.get("BTCUSDT")?.let {
 
-                            val serverWallet = coinItem.walletBalance.toBigDecimal().setScale(8, RoundingMode.DOWN)
-                            val positionSize =
-                                account.positions.getPosition(it).size.toBigDecimal().setScale(8, RoundingMode.DOWN)
+                                val serverWallet = coinItem.walletBalance.toBigDecimal().setScale(8, RoundingMode.DOWN)
+                                val positionSize =
+                                    account.positions.getPosition(it).size.toBigDecimal().setScale(8, RoundingMode.DOWN)
 
-
-                            println(
-                                "      Server Wallet:  ${serverWallet.toPlainString()}\n" +
-                                        "      ByBitBrkr Pos:  ${positionSize.toPlainString()}\n" +
-                                        "         Difference: ${TextColors.yellow((serverWallet - positionSize).toPlainString())}"
-                            )
-
-//                            _account.setPosition(
-//                                Position(
-//                                    it,
-//                                    Size(
-//                                        coinItem.walletBalance.toBigDecimal().setScale(8, RoundingMode.DOWN)
-//                                    )
-//                                )
-//                            )
+                                println(
+                                    "      Server Wallet:  ${serverWallet.toPlainString()}\n" +
+                                            "      ByBitBrkr Pos:  ${positionSize.toPlainString()}\n" +
+                                            "         Difference: ${TextColors.yellow((serverWallet - positionSize).toPlainString())}"
+                                )
+                            }
                         }
                     }
                 }
-
-
             }
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Execution -> {
+
 
                 message.data.forEach {
                     val asset = assetMap.get(it.symbol)
@@ -183,7 +247,15 @@ class ByBitBroker(
                     val position = account.positions.firstOrNull { it.asset == asset }
 
                     val execPrice = it.execPrice.toDouble()
-                    val execQty = Size(it.execQty)
+                    val size = when (it.category) {
+                        Category.spot -> {
+                            Size(it.execQty)
+                        }
+
+                        else -> {
+                            Size(it.execValue!!)
+                        }
+                    }
 
                     val type = if (it.isMaker) {
                         "Limit"
@@ -194,36 +266,36 @@ class ByBitBroker(
                     printBroker(
                         brokerType,
                         " Executed ${type} ${it.side} " +
-                                TextColors.cyan(execQty.toString()) +
+                                TextColors.cyan(size.toString()) +
                                 " @ ${
-                            TextColors.brightBlue(
-                                execPrice.toString()
-                            )
-                        } " + TextColors.gray(it.execTime)
+                                    TextColors.brightBlue(
+                                        execPrice.toString()
+                                    )
+                                } " + TextColors.gray(it.execTime)
                     )
 
                     if (position == null) {
-                        if (it.side == Side.Buy)
-                            _account.setPosition(
-                                Position(
-                                    asset,
-                                    size = execQty,
-                                    avgPrice = execPrice,
-                                    lastUpdate = Instant.ofEpochMilli(it.execTime.toLong())
-                                )
+                        val sign = if (it.side == Side.Buy) 1 else -1
+                        _account.setPosition(
+                            Position(
+                                asset,
+                                size = size * sign,
+                                avgPrice = execPrice,
+                                lastUpdate = Instant.ofEpochMilli(it.execTime.toLong())
                             )
+                        )
                     } else {
 
                         val avgPrice = if (it.side == Side.Buy) {
-                            (position.avgPrice.times(position.size.toDouble()) + execPrice.times(execQty.toDouble())) / (position.size.toDouble() + execQty.toDouble())
+                            (position.avgPrice.times(position.size.toDouble()) + execPrice.times(size.toDouble())) / (position.size.toDouble() + size.toDouble())
                         } else {
                             position.avgPrice
                         }
 
                         val newSize = if (it.side == Side.Buy) {
-                            execQty + position.size
+                            size + position.size
                         } else {
-                            position.size - execQty
+                            position.size - size
                         }
 
                         _account.setPosition(
@@ -250,6 +322,31 @@ class ByBitBroker(
     val availableAssets
         get() = assetMap.values.toSortedSet()
 
+
+    private fun syncAccountCash() {
+
+        val accountType = when (category) {
+            Category.inverse, Category.linear -> {
+                AccountType.CONTRACT
+            }
+
+            Category.spot -> {
+                AccountType.SPOT
+            }
+
+            Category.option -> {
+                AccountType.OPTION
+            }
+        }
+
+        val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(accountType))
+
+        for (coinItem in walletBalanceResp.result.list.first().coin.filter { it.coin == baseCurrency.currencyCode }) {
+            _account.cash.set(Currency.getInstance(coinItem.coin), coinItem.walletBalance.toDouble())
+        }
+    }
+
+
     private fun updateAccount() {
 
         // this is very specific to BTCUSDT..just wanted a way to have a position
@@ -275,11 +372,13 @@ class ByBitBroker(
 
         val ordersOpenPaginated = client.orderClient.ordersOpenPaginated(
             OrdersOpenParams(
-                Category.spot
+                category,
+                symbol = "BTCUSD"
             )
         )
+
         for (order in ordersOpenPaginated) {
-            val orderId = placedOrders[order.orderId] ?: continue
+            val orderId = placedOrders[order.orderLinkId] ?: continue
             val state = _account.getOrder(orderId) ?: continue
 
             when (order.orderStatus) {
@@ -335,7 +434,7 @@ class ByBitBroker(
                 is UpdateOrder -> {
                     val symbol = order.asset.symbol
                     val updatedOrder = amend(symbol, order)
-                    placedOrders[updatedOrder.result.orderId] = order.id
+//                    placedOrders[updatedOrder.result.orderId] = order.id
                 }
 
                 else -> logger.warn {
@@ -358,18 +457,20 @@ class ByBitBroker(
 
         val orderLinkId = placedOrders.entries.find { it.value == cancellation.order.id }?.key
 
-        val deferred = GlobalScope.async {
+        GlobalScope.async {
 
-            val order = cancellation.order
-            val params = CancelOrderParams(
-                Category.spot,
-                symbol = order.asset.symbol,
-                orderLinkId = orderLinkId
-            )
-            val cancelOrderResponse = client.orderClient.cancelOrder(params)
+            try {
+                val order = cancellation.order
 
-            if (cancelOrderResponse.retMsg != "OK") {
-                println(cancelOrderResponse.retMsg)
+                client.orderClient.cancelOrderBlocking(
+                    CancelOrderParams(
+                        category,
+                        symbol = order.asset.symbol,
+                        orderLinkId = orderLinkId
+                    )
+                )
+            } catch (e: Exception) {
+                logger.error { e.message }
             }
         }
     }
@@ -381,26 +482,42 @@ class ByBitBroker(
      * @param order
      */
     private fun trade(orderLinkId: String, symbol: String, order: LimitOrder) {
-        val amount = order.size.absoluteValue.toBigDecimal().setScale(6, RoundingMode.DOWN).toPlainString()
+
+        val amount = when (category) {
+            Category.spot -> {
+                order.size.absoluteValue.toBigDecimal().setScale(6, RoundingMode.DOWN)
+            }
+
+            else -> {
+                Size(
+                    (order.size.absoluteValue * order.limit).toBigDecimal().setScale(0, RoundingMode.HALF_UP)
+                ).toBigDecimal()
+            }
+        }
+
         val price = order.limit.toBigDecimal().setScale(2, RoundingMode.DOWN)
 
-        val deferred = GlobalScope.async {
-            val newOrder = client.orderClient.placeOrder(
-                PlaceOrderParams(
-                    Category.spot,
-                    symbol,
-                    side = if (order.buy) {
-                        Side.Buy
-                    } else {
-                        Side.Sell
-                    },
-                    OrderType.Limit,
-                    amount,
-                    price.toPlainString(),
-                    orderLinkId = orderLinkId
+        GlobalScope.async {
+
+            try {
+                client.orderClient.placeOrderBlocking(
+                    PlaceOrderParams(
+                        category,
+                        symbol,
+                        side = if (order.buy) {
+                            Side.Buy
+                        } else {
+                            Side.Sell
+                        },
+                        OrderType.Limit,
+                        amount.toPlainString(),
+                        price.toPlainString(),
+                        orderLinkId = orderLinkId
+                    )
                 )
-            )
-            logger.info { "$newOrder" }
+            } catch (e: Exception) {
+                logger.error { e.message }
+            }
         }
     }
 
@@ -412,30 +529,38 @@ class ByBitBroker(
      */
     private fun trade(orderLinkId: String, symbol: String, order: MarketOrder, price: Double?) {
 
+        var amount = order.size.absoluteValue
 
-        val amount = order.size.absoluteValue * price!!
+        if (category == Category.spot) amount *= price!!
+        else {
+            amount = Size((amount * price!!).toBigDecimal().setScale(0, RoundingMode.HALF_UP))
+        }
 
         // ByBit peculiarity!! for SPOT ONLY!
         // Order quantity. For Spot Market Buy order, please note that qty should be quote currency amount
 
-        val deferred = GlobalScope.async {
-
-            val newOrder = client.orderClient.placeOrder(
-                PlaceOrderParams(
-                    Category.spot,
-                    symbol,
-                    side = if (order.buy) {
-                        Side.Buy
-                    } else {
-                        Side.Sell
-                    },
-                    OrderType.Market,
-                    amount.toString(),
-                    orderLinkId = orderLinkId
+        GlobalScope.async {
+            try {
+                client.orderClient.placeOrderBlocking(
+                    PlaceOrderParams(
+                        category,
+                        symbol,
+                        side = if (order.buy) {
+                            Side.Buy
+                        } else {
+                            Side.Sell
+                        },
+                        OrderType.Market,
+                        amount.toString(),
+                        orderLinkId = orderLinkId
+                    )
                 )
-            )
-            logger.info { "$newOrder" }
+            } catch (e: Exception) {
+                logger.error { e.message }
+            }
         }
+
+
     }
 
 
@@ -448,21 +573,19 @@ class ByBitBroker(
                 val limitOrder = order.update as LimitOrder
                 val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
 
-                with(orderLinkId) {
-                    val qty = limitOrder.size.toString()
-                    val updatedOrder = client.orderClient.amendOrderBlocking(
-                        AmendOrderParams(
-                            "inverse",
-                            symbol,
-                            orderLinkId = orderLinkId,
-                            qty = qty,
-                            price = limitOrder.limit.toString()
+                val qty = limitOrder.size.toString()
+                val updatedOrder = client.orderClient.amendOrderBlocking(
+                    AmendOrderParams(
+                        "inverse",
+                        symbol,
+                        orderLinkId = orderLinkId,
+                        qty = qty,
+                        price = limitOrder.limit.toString()
 //                orderLinkId = order.id.toString()
-                        )
                     )
-                    logger.info { "$updatedOrder" }
-                    return updatedOrder
-                }
+                )
+                logger.info { "$updatedOrder" }
+                return updatedOrder
             }
 
             else -> {

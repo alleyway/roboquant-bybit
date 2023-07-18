@@ -4,6 +4,7 @@ import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.market.InstrumentsInfoParams
 import bybit.sdk.rest.market.InstrumentsInfoResultItem
 import bybit.sdk.shared.Category
+import bybit.sdk.shared.ContractType
 import bybit.sdk.websocket.ByBitWebSocketClient
 import bybit.sdk.websocket.ByBitWebSocketListener
 import bybit.sdk.websocket.ByBitWebSocketMessage
@@ -70,7 +71,7 @@ internal object ByBit {
 
     private fun InstrumentsInfoResultItem.toAsset(): Asset {
 
-        val currency = Currency.getInstance(this.quoteCoin)
+        var currency = Currency.getInstance(this.quoteCoin)
 
         val idPrefix = when(this) {
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemSpot -> {
@@ -79,21 +80,26 @@ internal object ByBit {
 
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemLinearInverse -> {
 //                "linearInverse"
+                when (this.contractType) {
+                    ContractType.InversePerpetual, ContractType.InverseFutures -> {
+                        currency = Currency.getInstance(this.baseCoin)
+                    }
+                    else -> {
+                        // nothing
+                    }
+                }
                 this.contractType
             }
-
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemOption -> {
                 "option"
             }
-
             else -> {
                 "unknown"
             }
         }
-
         return Asset(
             this.symbol,
-            type = AssetType.CRYPTO,
+            type = AssetType.INVERSE,
             currency,
             Exchange.CRYPTO,
 //            id= "$idPrefix:${symbol}"

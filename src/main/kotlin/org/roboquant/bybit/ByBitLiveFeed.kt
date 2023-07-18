@@ -232,7 +232,7 @@ class ByBitLiveFeed(
             }
 
             ByBitEndpoint.Inverse -> {
-                Currency.USD
+                Currency.BTC
             }
 
             ByBitEndpoint.Option -> {
@@ -246,7 +246,7 @@ class ByBitLiveFeed(
 
         val assets = symbols.map {
             Asset(
-                it, AssetType.CRYPTO, exchange = Exchange.CRYPTO, currency = currency,
+                it, AssetType.INVERSE, exchange = Exchange.CRYPTO, currency = currency,
 //                id = "$idPrefix:$it"
             )
         }

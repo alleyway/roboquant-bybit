@@ -6,23 +6,18 @@ import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
 import bybit.sdk.rest.order.*
 import bybit.sdk.rest.position.PositionInfoParams
-import bybit.sdk.shared.AccountType
-import bybit.sdk.shared.Category
-import bybit.sdk.shared.OrderType
-import bybit.sdk.shared.Side
+import bybit.sdk.shared.*
 import bybit.sdk.websocket.*
 import com.github.ajalt.mordant.rendering.TextColors
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.async
-import org.roboquant.brokers.Account
-import org.roboquant.brokers.Broker
-import org.roboquant.brokers.Position
-import org.roboquant.brokers.getPosition
+import org.roboquant.brokers.*
 import org.roboquant.brokers.sim.execution.InternalAccount
 import org.roboquant.common.*
 import org.roboquant.common.Currency
 import org.roboquant.feeds.Event
 import org.roboquant.orders.*
+import org.roboquant.orders.OrderStatus
 import java.math.RoundingMode
 import java.time.Instant
 import java.util.*
@@ -43,7 +38,6 @@ class ByBitBroker(
     configure: ByBitConfig.() -> Unit = {}
 ) : Broker {
 
-    private val brokerType = BrokerType.ByBitBroker
     private val client: ByBitRestClient
     private val wsClient: ByBitWebSocketClient
     private val _account = InternalAccount(baseCurrency)
@@ -170,7 +164,7 @@ class ByBitBroker(
             }
 
             is ByBitWebSocketMessage.RawMessage -> {
-                println(message.data)
+                logger.info { message.data }
             }
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Order -> {
@@ -186,7 +180,7 @@ class ByBitBroker(
 
                         bybit.sdk.shared.OrderStatus.PartiallyFilled -> {
 //                            if (order.orderType == OrderType.Market) {
-//                                println("order.cumExecValue: " + order.cumExecValue)
+//                                logger.trace("order.cumExecValue: " + order.cumExecValue)
 //                                _account.updateOrder(state, Instant.now(), OrderStatus.COMPLETED)
 //                            }
 
@@ -213,6 +207,13 @@ class ByBitBroker(
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Wallet -> {
 
+                for (coinItem in (message.data.filter { it.accountType == AccountType.CONTRACT }).first().coin) {
+                    if (coinItem.coin == "BTC") {
+                        _account.cash.set(Currency.getInstance(coinItem.coin), coinItem.availableToWithdraw.toDouble())
+                    }
+                }
+
+
                 // NOTE: for debugging how well ByBitBroker is keeping track of our position
 
                 if (false) {
@@ -224,7 +225,7 @@ class ByBitBroker(
                                 val positionSize =
                                     account.positions.getPosition(it).size.toBigDecimal().setScale(8, RoundingMode.DOWN)
 
-                                println(
+                                logger.debug (
                                     "      Server Wallet:  ${serverWallet.toPlainString()}\n" +
                                             "      ByBitBrkr Pos:  ${positionSize.toPlainString()}\n" +
                                             "         Difference: ${TextColors.yellow((serverWallet - positionSize).toPlainString())}"
@@ -237,77 +238,18 @@ class ByBitBroker(
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Execution -> {
 
-
                 message.data.forEach {
-                    val asset = assetMap.get(it.symbol)
-                    if (asset == null) {
-                        logger.warn("Received execution for unknown symbol: ${it.symbol}")
-                        return
-                    }
-                    val position = account.positions.firstOrNull { it.asset == asset }
 
-                    val execPrice = it.execPrice.toDouble()
-                    val size = when (it.category) {
-                        Category.spot -> {
-                            Size(it.execQty)
-                        }
+                    when (it.execType) {
+                        ExecType.Trade -> updateAccount(it)
 
                         else -> {
-                            Size(it.execValue!!)
+                            logger.warn("execution type ${it.execType} not yet handled")
+                            return
                         }
                     }
 
-                    val type = if (it.isMaker) {
-                        "Limit"
-                    } else {
-                        "Market"
-                    }
 
-                    printBroker(
-                        brokerType,
-                        " Executed ${type} ${it.side} " +
-                                TextColors.cyan(size.toString()) +
-                                " @ ${
-                                    TextColors.brightBlue(
-                                        execPrice.toString()
-                                    )
-                                } " + TextColors.gray(it.execTime)
-                    )
-
-                    if (position == null) {
-                        val sign = if (it.side == Side.Buy) 1 else -1
-                        _account.setPosition(
-                            Position(
-                                asset,
-                                size = size * sign,
-                                avgPrice = execPrice,
-                                lastUpdate = Instant.ofEpochMilli(it.execTime.toLong())
-                            )
-                        )
-                    } else {
-
-                        val avgPrice = if (it.side == Side.Buy) {
-                            (position.avgPrice.times(position.size.toDouble()) + execPrice.times(size.toDouble())) / (position.size.toDouble() + size.toDouble())
-                        } else {
-                            position.avgPrice
-                        }
-
-                        val newSize = if (it.side == Side.Buy) {
-                            size + position.size
-                        } else {
-                            position.size - size
-                        }
-
-                        _account.setPosition(
-                            Position(
-                                asset,
-                                size = newSize,
-//                                new_average_price = (existing_average_price * existing_shares + added_price * added_shares) / (existing_shares + added_shares)
-                                avgPrice = avgPrice,
-                                lastUpdate = Instant.ofEpochMilli(it.execTime.toLong())
-                            )
-                        )
-                    }
                 }
             }
 
@@ -346,29 +288,86 @@ class ByBitBroker(
         }
     }
 
+    private fun updatePosition(position: Position): Amount {
+        val asset = position.asset
+        val p = _account.portfolio
+        val currentPos = p.getOrDefault(asset, Position.empty(asset))
+        val newPosition = currentPos + position
+        if (newPosition.closed) p.remove(asset) else p[asset] = newPosition
+        return currentPos.realizedPNL(position)
+    }
 
-    private fun updateAccount() {
+    private fun updateAccount(execution: ByBitWebSocketMessage.ExecutionItem) {
 
-        // this is very specific to BTCUSDT..just wanted a way to have a position
-        val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(AccountType.SPOT))
+        val asset = assetMap.get(execution.symbol)
 
-        for (coinItem in walletBalanceResp.result.list.first().coin) {
-            if (coinItem.coin == "BTC") {
-                assetMap.get("BTCUSDT")?.let {
-                    // or should I use equity??
-                    _account.setPosition(
-                        Position(
-                            it,
-                            Size(
-                                coinItem.walletBalance.toBigDecimal().setScale(8, RoundingMode.DOWN)
-                            )
-                        )
-                    )
-                }
-            }
+        if (asset == null) {
+            logger.warn("Received execution for unknown symbol: ${execution.symbol}")
+            return
         }
 
-        // end specific to bitcoin
+        val rqOrderId = placedOrders[execution.orderLinkId]
+
+        if (rqOrderId == null) {
+            logger.warn("Received execution order not placed in system. orderLinkId : ${execution.orderLinkId}, orderId : ${execution.orderId}")
+            return
+        }
+
+        val sign = if (execution.side == Side.Buy) 1 else -1
+
+        val execPrice = execution.execPrice.toDouble()
+
+        val execSize = Size(execution.execQty) * sign
+
+        logger.info(" Executed ${execution.orderType} ${execution.side} "
+                    + TextColors.cyan(execSize.toString())
+                    + " @ ${TextColors.brightBlue(execPrice.toString())} "
+                    + TextColors.gray(execution.execTime)
+        )
+
+        val position = Position(asset, execSize, execPrice)
+
+        // Calculate the fees that apply to this execution
+        val fee = execution.execFee.toDouble()
+
+        val pnl = updatePosition(position) - fee
+
+        val newTrade = Trade(
+            Instant.ofEpochMilli(execution.execTime.toLong()),
+            asset,
+            execSize,
+            execPrice,
+            fee,
+            pnl.value,
+            rqOrderId
+        )
+
+        _account.addTrade(newTrade)
+        _account.cash.withdraw(newTrade.totalCost)
+
+    }
+
+    @Deprecated("No longer used")
+    private fun updateAccountOld() {
+
+        // START this is very specific to BTCUSDT..just wanted a way to have a position
+//        val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(AccountType.SPOT))
+//        for (coinItem in walletBalanceResp.result.list.first().coin) {
+//            if (coinItem.coin == "BTC") {
+//                assetMap.get("BTCUSDT")?.let {
+//                    // or should I use equity??
+//                    _account.setPosition(
+//                        Position(
+//                            it,
+//                            Size(
+//                                coinItem.walletBalance.toBigDecimal().setScale(8, RoundingMode.DOWN)
+//                            )
+//                        )
+//                    )
+//                }
+//            }
+//        }
+        // END specific to bitcoin
 
         val ordersOpenPaginated = client.orderClient.ordersOpenPaginated(
             OrdersOpenParams(
@@ -408,6 +407,7 @@ class ByBitBroker(
      * @return
      */
     override fun place(orders: List<Order>, event: Event): Account {
+        logger.trace { "Received ${orders.size} orders at ${event.time}" }
         _account.initializeOrders(orders)
 
         for (order in orders) {
@@ -443,6 +443,11 @@ class ByBitBroker(
             }
 
         }
+        _account.updateMarketPrices(event)
+        _account.lastUpdate = event.time
+
+        // maybe supposed to update account?
+
 
         return account
     }
@@ -489,9 +494,10 @@ class ByBitBroker(
             }
 
             else -> {
-                Size(
-                    (order.size.absoluteValue * order.limit).toBigDecimal().setScale(0, RoundingMode.HALF_UP)
-                ).toBigDecimal()
+                order.size.absoluteValue.toBigDecimal().setScale(0, RoundingMode.DOWN)
+//                Size(
+//                    (order.size.absoluteValue * order.limit).toBigDecimal().setScale(0, RoundingMode.HALF_UP)
+//                ).toBigDecimal()
             }
         }
 
@@ -532,9 +538,6 @@ class ByBitBroker(
         var amount = order.size.absoluteValue
 
         if (category == Category.spot) amount *= price!!
-        else {
-            amount = Size((amount * price!!).toBigDecimal().setScale(0, RoundingMode.HALF_UP))
-        }
 
         // ByBit peculiarity!! for SPOT ONLY!
         // Order quantity. For Spot Market Buy order, please note that qty should be quote currency amount

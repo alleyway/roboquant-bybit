@@ -56,7 +56,6 @@ class ByBitBroker(
     init {
         config.configure()
         client = ByBit.getRestClient(config)
-        logger.info("Created ByBitBroker with client $client")
 
         val wsOptions = WSClientConfigurableOptions(
             ByBitEndpoint.Private,
@@ -285,6 +284,9 @@ class ByBitBroker(
 
         for (coinItem in walletBalanceResp.result.list.first().coin.filter { it.coin == baseCurrency.currencyCode }) {
             _account.cash.set(Currency.getInstance(coinItem.coin), coinItem.walletBalance.toDouble())
+
+        // think i'm suppose to multiple my leverage by cash
+//            _account.buyingPower = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
         }
     }
 

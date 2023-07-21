@@ -56,7 +56,7 @@ internal object ByBit {
                 }
 
                 override fun onDisconnect(client: ByBitWebSocketClient) {
-                    logger.trace("Disconnected")
+                    logger.warn("Disconnected")
                 }
 
                 override fun onError(client: ByBitWebSocketClient, error: Throwable) {

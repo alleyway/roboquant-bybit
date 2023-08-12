@@ -2,15 +2,19 @@
 
 package org.roboquant.bybit
 
+import bybit.sdk.CustomResponseException
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
-import bybit.sdk.rest.order.*
+import bybit.sdk.rest.order.AmendOrderParams
+import bybit.sdk.rest.order.CancelOrderParams
+import bybit.sdk.rest.order.OrdersOpenParams
+import bybit.sdk.rest.order.PlaceOrderParams
 import bybit.sdk.rest.position.PositionInfoParams
 import bybit.sdk.shared.*
 import bybit.sdk.websocket.*
 import com.github.ajalt.mordant.rendering.TextColors
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
+import io.github.resilience4j.ratelimiter.RateLimiter
+import io.github.resilience4j.ratelimiter.RateLimiterConfig
 import org.roboquant.brokers.*
 import org.roboquant.brokers.sim.execution.InternalAccount
 import org.roboquant.common.*
@@ -19,6 +23,7 @@ import org.roboquant.feeds.Event
 import org.roboquant.orders.*
 import org.roboquant.orders.OrderStatus
 import java.math.RoundingMode
+import java.time.Duration
 import java.time.Instant
 import java.util.*
 
@@ -52,6 +57,14 @@ class ByBitBroker(
     private val logger = Logging.getLogger(ByBitBroker::class)
     private val placedOrders = mutableMapOf<String, Int>()
     private val assetMap: Map<String, Asset>
+
+    private val rateLimitConfig = RateLimiterConfig.custom()
+        .limitForPeriod(10) // Allow 10 calls within a time window
+        .limitRefreshPeriod(Duration.ofSeconds(1)) // Time window of 1 second
+        .timeoutDuration(Duration.ofMillis(1000)) // Timeout for acquiring a permit
+        .build()
+
+    private val rateLimiter = RateLimiter.of("broker", rateLimitConfig)
 
     init {
         config.configure()
@@ -163,7 +176,7 @@ class ByBitBroker(
             }
 
             is ByBitWebSocketMessage.RawMessage -> {
-                logger.info { message.data }
+                logger.debug { message.data }
             }
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Order -> {
@@ -173,6 +186,23 @@ class ByBitBroker(
                     val state = _account.getOrder(orderId) ?: continue
 
                     when (order.orderStatus) {
+                        bybit.sdk.shared.OrderStatus.New -> {
+                            // amend order comes here.
+                            // it was found in our placedOrders map, so must have already existed
+                            // state might be an instance of "UpdateOrder"
+
+                            when (state) {
+                                is UpdateOrder -> {
+//                                    _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                                }
+
+                                else -> {
+                                    // logger.info("WS: bybit.OrderStatus.New -> roboquant.OrderStatus.ACCEPTED")
+                                    _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                                }
+                            }
+                        }
+
                         bybit.sdk.shared.OrderStatus.Filled -> {
                             _account.updateOrder(state, Instant.now(), OrderStatus.COMPLETED)
                         }
@@ -198,7 +228,15 @@ class ByBitBroker(
                         bybit.sdk.shared.OrderStatus.Rejected ->
                             _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
 
-                        else -> _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                        else -> {
+                            // NOTE: an amended order will show up here with OrderStatus "New"
+                            logger.debug(
+                                "WS update ( price: ${(state as LimitOrder).limit} ) with orderLinkId: " + TextColors.gray(
+                                    order.orderLinkId
+                                )
+                            )
+                            _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                        }
                     }
                 }
 
@@ -224,7 +262,7 @@ class ByBitBroker(
                                 val positionSize =
                                     account.positions.getPosition(it).size.toBigDecimal().setScale(8, RoundingMode.DOWN)
 
-                                logger.debug (
+                                logger.debug(
                                     "      Server Wallet:  ${serverWallet.toPlainString()}\n" +
                                             "      ByBitBrkr Pos:  ${positionSize.toPlainString()}\n" +
                                             "         Difference: ${TextColors.yellow((serverWallet - positionSize).toPlainString())}"
@@ -285,7 +323,7 @@ class ByBitBroker(
         for (coinItem in walletBalanceResp.result.list.first().coin.filter { it.coin == baseCurrency.currencyCode }) {
             _account.cash.set(Currency.getInstance(coinItem.coin), coinItem.walletBalance.toDouble())
 
-        // think i'm suppose to multiple my leverage by cash
+            // think i'm suppose to multiple my leverage by cash
 //            _account.buyingPower = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
         }
     }
@@ -301,7 +339,7 @@ class ByBitBroker(
 
     private fun updateAccount(execution: ByBitWebSocketMessage.ExecutionItem) {
 
-        val asset = assetMap.get(execution.symbol)
+        val asset = assetMap[execution.symbol]
 
         if (asset == null) {
             logger.warn("Received execution for unknown symbol: ${execution.symbol}")
@@ -321,11 +359,19 @@ class ByBitBroker(
 
         val execSize = Size(execution.execQty) * sign
 
-        logger.info(" Executed ${execution.orderType} ${execution.side} "
+        logger.info(
+            "ByBitBroker Executed ${execution.orderType} ${execution.side} "
                     + TextColors.cyan(execSize.toString())
                     + " @ ${TextColors.brightBlue(execPrice.toString())} "
-                    + TextColors.gray(execution.execTime)
+                    + TextColors.gray(execution.orderLinkId)
         )
+
+//        if (execution.leavesQty == "0") {
+//            logger.debug("WS Execution leaves 0 qty, update order status to completed")
+//            _account.getOrder(rqOrderId)?.let {
+//                _account.updateOrder(it, Instant.now(), OrderStatus.COMPLETED)
+//            }
+//        }
 
         val position = Position(asset, execSize, execPrice)
 
@@ -435,8 +481,16 @@ class ByBitBroker(
 
                 is UpdateOrder -> {
                     val symbol = order.asset.symbol
-                    val updatedOrder = amend(symbol, order)
-//                    placedOrders[updatedOrder.result.orderId] = order.id
+                    try {
+                        val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
+                        if (orderLinkId != null) {
+                            placedOrders[orderLinkId] = order.id
+                            logger.debug("amend() will update status for orderLinkId: ${orderLinkId}")
+                            amend(symbol, order, orderLinkId)
+                        }
+                    } catch (error: CustomResponseException) {
+                        logger.warn(error.message)
+                    }
                 }
 
                 else -> logger.warn {
@@ -464,20 +518,35 @@ class ByBitBroker(
 
         val orderLinkId = placedOrders.entries.find { it.value == cancellation.order.id }?.key
 
-        GlobalScope.async {
 
+        if (orderLinkId !== null) {
+            //placedOrders.entries.remove(entry)
+            val now = Instant.now()
+            _account.completeOrder(cancellation, now)
             try {
-                val order = cancellation.order
+                // TODO: maybe we want this to be a new OrderStatus like "CANCELLING"
+                _account.updateOrder(cancellation.order, Instant.now(), OrderStatus.CANCELLED)
 
-                client.orderClient.cancelOrderBlocking(
-                    CancelOrderParams(
-                        category,
-                        symbol = order.asset.symbol,
-                        orderLinkId = orderLinkId
+            } catch (_: NoSuchElementException) {
+                logger.warn("NoSuchElementException trying to cancel order: ${cancellation.order}")
+                return
+            }
+
+            rateLimiter.executeRunnable {
+
+                try {
+                    val order = cancellation.order
+
+                    client.orderClient.cancelOrderBlocking(
+                        CancelOrderParams(
+                            category,
+                            symbol = order.asset.symbol,
+                            orderLinkId = orderLinkId
+                        )
                     )
-                )
-            } catch (e: Exception) {
-                logger.error { e.message }
+                } catch (e: Exception) {
+                    logger.error { e.message }
+                }
             }
         }
     }
@@ -505,7 +574,9 @@ class ByBitBroker(
 
         val price = order.limit.toBigDecimal().setScale(2, RoundingMode.DOWN)
 
-        GlobalScope.async {
+        rateLimiter.executeRunnable {
+
+            val reduceOnly = order.tag.startsWith("tpOrder")
 
             try {
                 client.orderClient.placeOrderBlocking(
@@ -519,8 +590,9 @@ class ByBitBroker(
                         },
                         OrderType.Limit,
                         amount.toPlainString(),
+                        reduceOnly = reduceOnly,
                         price.toPlainString(),
-                        orderLinkId = orderLinkId
+                        orderLinkId = orderLinkId,
                     )
                 )
             } catch (e: Exception) {
@@ -544,7 +616,7 @@ class ByBitBroker(
         // ByBit peculiarity!! for SPOT ONLY!
         // Order quantity. For Spot Market Buy order, please note that qty should be quote currency amount
 
-        GlobalScope.async {
+        rateLimiter.executeRunnable {
             try {
                 client.orderClient.placeOrderBlocking(
                     PlaceOrderParams(
@@ -564,33 +636,51 @@ class ByBitBroker(
                 logger.error { e.message }
             }
         }
-
-
     }
 
 
-    // only applies to derivatives, not SPOT!
-    private fun amend(symbol: String, order: UpdateOrder): AmendOrderResponse {
+    private fun amend(symbol: String, order: UpdateOrder, orderLinkId: String) {
+        if (category == Category.spot) throw Exception("Unable to amend orders for spot according to bybit docs")
+
+
+        if (_account.getOrder(order.order.id) !== null)
+            _account.updateOrder(order, Instant.now(), OrderStatus.ACCEPTED)
+        else
+            _account.updateOrder(order, Instant.now(), OrderStatus.REJECTED)
 
         when (order.update) {
             is LimitOrder -> {
+                val originalLimitOrder = order.order as LimitOrder
+                val updatedLimitOrder = order.update as LimitOrder
 
-                val limitOrder = order.update as LimitOrder
-                val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
+                // only update qty or price if different from original otherwise API complains
+                val qty = when (updatedLimitOrder.size == originalLimitOrder.size) {
+                    true -> null
+                    false -> updatedLimitOrder.size.absoluteValue.toString()
+                }
+                val price = when (updatedLimitOrder.limit.equals(originalLimitOrder.limit)) {
+                    true -> null
+                    false -> updatedLimitOrder.limit.toString()
+                }
 
-                val qty = limitOrder.size.toString()
-                val updatedOrder = client.orderClient.amendOrderBlocking(
-                    AmendOrderParams(
-                        "inverse",
-                        symbol,
-                        orderLinkId = orderLinkId,
-                        qty = qty,
-                        price = limitOrder.limit.toString()
-//                orderLinkId = order.id.toString()
+                logger.info(
+                    "Amending order from ${originalLimitOrder.limit} to ${updatedLimitOrder.limit} " + TextColors.gray(
+                        orderLinkId
                     )
                 )
-                logger.info { "$updatedOrder" }
-                return updatedOrder
+
+                rateLimiter.executeRunnable {
+                    val updatedOrderResponse = client.orderClient.amendOrderBlocking(
+                        AmendOrderParams(
+                            category,
+                            symbol,
+                            orderLinkId = orderLinkId,
+                            qty = qty,
+                            price = price
+                        )
+                    )
+                    logger.info { "$updatedOrderResponse" }
+                }
             }
 
             else -> {

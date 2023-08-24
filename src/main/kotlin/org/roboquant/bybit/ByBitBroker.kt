@@ -94,7 +94,7 @@ class ByBitBroker(
     }
 
     override fun sync(event: Event) {
-        logger.info { "Sync()" }
+        logger.debug { "Sync()" }
         _account.updateMarketPrices(event)
         _account.lastUpdate = event.time
         // maybe once-in-awhile we're supposed to do some "expensive"
@@ -257,7 +257,7 @@ class ByBitBroker(
                 for (coinItem in (message.data.filter { it.accountType == AccountType.CONTRACT }).first().coin) {
                     if (coinItem.coin == "BTC") {
                         val walletBalance = coinItem.walletBalance.toDouble()
-                        logger.info("ByBitWebSocketMessage.PrivateTopicResponse.Wallet | walletBalance: $walletBalance")
+                        logger.debug("ByBitWebSocketMessage.PrivateTopicResponse.Wallet | walletBalance: $walletBalance")
                         _account.cash.set(Currency.getInstance(coinItem.coin), walletBalance)
                     }
                 }

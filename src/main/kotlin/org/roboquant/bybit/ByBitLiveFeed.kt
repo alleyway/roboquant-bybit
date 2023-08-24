@@ -103,10 +103,14 @@ class ByBitLiveFeed(
     }
 
     private fun actionsList(asset: Asset, vararg actions: Action): List<Action> {
+
         val didStartAlready = subscribeStarted[asset.symbol]
+
+        if (recentTradeHistoryQueue !== null) return emptyList()
+
         return if (isActive && didStartAlready !== null && didStartAlready.not()) {
             subscribeStarted[asset.symbol] = true
-            actions.toList() + SubScribeStartedAction(asset)
+            listOf(SubScribeStartedAction(asset)) + actions.toList()
         } else {
             actions.toList()
         }
@@ -228,7 +232,7 @@ class ByBitLiveFeed(
             PublicTradingHistoryParams(
                 category = fromEndPoint(endpoint),
                 symbol,
-                limit = 300
+                limit = 1000
             )
         )
         val asset = subscriptions[symbol]
@@ -329,6 +333,7 @@ class ByBitLiveFeed(
         recentTradeHistoryQueue?.forEach{
             channel.send(it)
         }
+        recentTradeHistoryQueue = null
         super.play(channel)
     }
 

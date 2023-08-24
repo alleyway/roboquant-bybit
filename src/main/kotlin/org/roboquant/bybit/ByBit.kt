@@ -55,6 +55,10 @@ internal object ByBit {
                     handler(message)
                 }
 
+                override fun onReconnect(client: ByBitWebSocketClient) {
+                    logger.warn ("Reconnecting")
+                }
+
                 override fun onDisconnect(client: ByBitWebSocketClient) {
                     logger.warn("Disconnected")
                 }

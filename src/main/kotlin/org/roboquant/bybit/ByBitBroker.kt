@@ -547,7 +547,7 @@ class ByBitBroker(
             val reduceOnly = order.tag.startsWith("tpOrder")
 
             try {
-                client.orderClient.placeOrderBlocking(
+                val response = client.orderClient.placeOrderBlocking(
                     PlaceOrderParams(
                         category,
                         symbol,
@@ -564,6 +564,16 @@ class ByBitBroker(
                         orderLinkId = orderLinkId,
                     )
                 )
+                if (response.retCode != 0) {
+                    logger.warn { response.retMsg }
+                    val orderId = placedOrders[orderLinkId]
+                    orderId?.let {
+                        val state = _account.getOrder(orderId)
+                        state?.let {
+                            _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 logger.error(e.message)
             }
@@ -587,7 +597,7 @@ class ByBitBroker(
 
         rateLimiter.executeRunnable {
             try {
-                client.orderClient.placeOrderBlocking(
+                val response = client.orderClient.placeOrderBlocking(
                     PlaceOrderParams(
                         category,
                         symbol,
@@ -601,6 +611,16 @@ class ByBitBroker(
                         orderLinkId = orderLinkId
                     )
                 )
+                if (response.retCode != 0) {
+                    logger.warn { response.retMsg }
+                    val orderId = placedOrders[orderLinkId]
+                    orderId?.let {
+                        val state = _account.getOrder(orderId)
+                        state?.let {
+                            _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 logger.error(e.message)
             }

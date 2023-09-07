@@ -39,8 +39,6 @@ enum class ByBitActionType {
     BAR_PER_MINUTE,
 }
 
-class SubScribeStartedAction(val asset: Asset) : Action
-
 /**
  *
  * @param configure additional configuration logic
@@ -61,8 +59,7 @@ class ByBitLiveFeed(
     private var cachedAsks: MutableMap<Double, Double> = mutableMapOf()
     private var cachedBids: MutableMap<Double, Double> = mutableMapOf()
 
-    private val subscribeStarted = mutableMapOf<String, Boolean>()
-    private var recentTradeHistoryQueue: List<Event>? = null
+    private var recentTradeHistoryQueue: MutableList<Event> = mutableListOf()
 
     init {
         config.configure()
@@ -100,19 +97,6 @@ class ByBitLiveFeed(
         return subscriptions.getValue(symbol!!)
     }
 
-    private fun actionsList(asset: Asset, vararg actions: Action): List<Action> {
-
-        val didStartAlready = subscribeStarted[asset.symbol]
-
-        if (recentTradeHistoryQueue !== null) return emptyList()
-
-        return if (isActive && didStartAlready !== null && didStartAlready.not()) {
-            subscribeStarted[asset.symbol] = true
-            listOf(SubScribeStartedAction(asset)) + actions.toList()
-        } else {
-            actions.toList()
-        }
-    }
 
     /**
      * Handle incoming messages
@@ -132,7 +116,7 @@ class ByBitLiveFeed(
 
                     val sign = if (it.side == Side.Sell) -1 else 1
                     val action = TradePrice(asset, it.price, it.volume.times(sign))
-                    send(Event(actionsList(asset, action), getTime(it.timestamp)))
+                    send(Event(listOf(action), getTime(it.timestamp)))
                 }
             }
 
@@ -228,7 +212,7 @@ class ByBitLiveFeed(
     }
 
     // creates some events that the algo can use to "warm up"
-    private fun loadRecentTradeHistory(symbol: String) {
+    private fun fetchRecentTradeHistoryEvents(symbol: String): List<Event> {
         val tradingHistoryResponse = client.marketClient.getPublicTradingHistoryBlocking(
             PublicTradingHistoryParams(
                 category = endpoint.toCategory(),
@@ -239,7 +223,7 @@ class ByBitLiveFeed(
         val asset = subscriptions[symbol]
         logger.info("loadRecentTradeHistory: loading ${tradingHistoryResponse.result.list.size} most recent trades")
 
-        recentTradeHistoryQueue = tradingHistoryResponse.result.list.map {
+        return tradingHistoryResponse.result.list.map {
             val sign = if (it.side == Side.Sell) -1 else 1
             val action = TradePrice(asset!!, it.price.toDouble(), it.size.toDouble().times(sign))
             Event(listOf(action), Instant.ofEpochMilli(it.time.toLong()))
@@ -323,8 +307,8 @@ class ByBitLiveFeed(
         if (loadRecentTradeHistory) {
             if (type == ByBitActionType.TRADE) {
                 symbols.forEach {
-                    subscribeStarted[it] = false
-                    loadRecentTradeHistory(it)
+                    val events = fetchRecentTradeHistoryEvents(it)
+                    recentTradeHistoryQueue.addAll(events)
                 }
             } else logger.error("Can only use loadRecentTradeHistory when ActionType is TRADE")
         }
@@ -332,10 +316,9 @@ class ByBitLiveFeed(
     }
 
     override suspend fun play(channel: EventChannel) {
-        recentTradeHistoryQueue?.forEach{
+        recentTradeHistoryQueue.forEach{
             channel.send(it)
         }
-        recentTradeHistoryQueue = null
         super.play(channel)
     }
 

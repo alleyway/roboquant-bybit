@@ -2,7 +2,8 @@ package org.roboquant.bybit
 
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.market.PublicTradingHistoryParams
-import bybit.sdk.shared.fromEndPoint
+import bybit.sdk.shared.Side
+import bybit.sdk.shared.toCategory
 import bybit.sdk.websocket.*
 import kotlinx.coroutines.runBlocking
 import org.roboquant.bybit.ByBit.getRestClient
@@ -65,9 +66,6 @@ class ByBitLiveFeed(
 
     init {
         config.configure()
-        require(config.apiKey.isNotBlank()) { "No api key provided" }
-        require(config.secret.isNotBlank()) { "No secret provided" }
-
         val wsOptions = WSClientConfigurableOptions(
             endpoint,
             config.apiKey,
@@ -119,6 +117,7 @@ class ByBitLiveFeed(
     /**
      * Handle incoming messages
      */
+    @Suppress("CyclomaticComplexMethod")
     private fun handler(message: ByBitWebSocketMessage) {
 
         when (message) {
@@ -130,7 +129,9 @@ class ByBitLiveFeed(
                 message.data.forEach {
                     val asset = getSubscribedAsset(it.symbol)
 //                    val action = TradePriceByBit(asset, it.price, it.volume ?: Double.NaN, it.tickDirection)
-                    val action = TradePrice(asset, it.price, it.volume)
+
+                    val sign = if (it.side == Side.Sell) -1 else 1
+                    val action = TradePrice(asset, it.price, it.volume.times(sign))
                     send(Event(actionsList(asset, action), getTime(it.timestamp)))
                 }
             }
@@ -230,7 +231,7 @@ class ByBitLiveFeed(
     private fun loadRecentTradeHistory(symbol: String) {
         val tradingHistoryResponse = client.marketClient.getPublicTradingHistoryBlocking(
             PublicTradingHistoryParams(
-                category = fromEndPoint(endpoint),
+                category = endpoint.toCategory(),
                 symbol,
                 limit = 1000
             )
@@ -239,7 +240,8 @@ class ByBitLiveFeed(
         logger.info("loadRecentTradeHistory: loading ${tradingHistoryResponse.result.list.size} most recent trades")
 
         recentTradeHistoryQueue = tradingHistoryResponse.result.list.map {
-            val action = TradePrice(asset!!, it.price.toDouble(), it.size.toDouble())
+            val sign = if (it.side == Side.Sell) -1 else 1
+            val action = TradePrice(asset!!, it.price.toDouble(), it.size.toDouble().times(sign))
             Event(listOf(action), Instant.ofEpochMilli(it.time.toLong()))
         }.asReversed()
     }

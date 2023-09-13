@@ -5,9 +5,8 @@ import bybit.sdk.rest.market.PublicTradingHistoryParams
 import bybit.sdk.shared.Side
 import bybit.sdk.shared.toCategory
 import bybit.sdk.websocket.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import org.roboquant.bybit.ByBit.getRestClient
-import org.roboquant.bybit.ByBit.getWebSocketClient
 import org.roboquant.common.*
 import org.roboquant.feeds.*
 import java.lang.Integer.parseInt
@@ -55,7 +54,8 @@ class ByBitLiveFeed(
     private var client: ByBitRestClient
     private var wsClient: ByBitWebSocketClient
     private val logger = Logging.getLogger(ByBitLiveFeed::class)
-    private val subscriptions = mutableMapOf<String, Asset>()
+    private val subscriptions = mutableMapOf<String, Asset>() //maps symbol to asset
+    private val bybitSubscriptions: MutableList<ByBitWebSocketSubscription> = mutableListOf()
     private var cachedAsks: MutableMap<Double, Double> = mutableMapOf()
     private var cachedBids: MutableMap<Double, Double> = mutableMapOf()
 
@@ -70,11 +70,22 @@ class ByBitLiveFeed(
             config.testnet
         )
 
-        wsClient = getWebSocketClient(wsOptions, this::handler)
         client = getRestClient(config)
+        wsClient = ByBit.getWebSocketClient(wsOptions)
+
+        val scope = CoroutineScope(Dispatchers.Default + Job())
+
+        scope.launch {
+            wsClient.connect(listOf())
+            val channel = wsClient.getWebSocketEventChannel()
+            while (true) {
+                val msg = channel.receive()
+                (this@ByBitLiveFeed::handler)(msg)
+            }
+        }
 
         runBlocking {
-            wsClient.connect()
+            delay(3000)
         }
     }
 
@@ -230,33 +241,10 @@ class ByBitLiveFeed(
         }.asReversed()
     }
 
-    /**
-     * Subscribe to the [symbols] for the specified action [type], default action is `ByBitActionType.TRADE`
-     */
-
-    fun subscribe(
+    fun subscribeTrade(
         vararg symbols: String,
-        type: ByBitActionType = ByBitActionType.TRADE,
         loadRecentTradeHistory: Boolean = false
     ) {
-
-        val idPrefix = when (endpoint) {
-            ByBitEndpoint.Spot -> {
-                "spot"
-            }
-
-            ByBitEndpoint.Linear, ByBitEndpoint.Inverse -> {
-                "linearInverse"
-            }
-
-            ByBitEndpoint.Option -> {
-                "option"
-            }
-
-            else -> {
-                "unknown"
-            }
-        }
 
         val currency = when (endpoint) {
             ByBitEndpoint.Spot, ByBitEndpoint.Linear -> {
@@ -278,45 +266,82 @@ class ByBitLiveFeed(
 
         val assets = symbols.map {
             Asset(
-                it, AssetType.INVERSE, exchange = Exchange.CRYPTO, currency = currency,
-//                id = "$idPrefix:$it"
+                it,
+                if (endpoint == ByBitEndpoint.Inverse)
+                    AssetType.INVERSE
+                else
+                    AssetType.CRYPTO,
+                exchange = Exchange.CRYPTO, currency = currency
             )
         }
             .associateBy { it.symbol }
+
         subscriptions.putAll(assets)
 
-        val bybitSubs = when (type) {
-
-            ByBitActionType.TRADE -> symbols.map {
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.Trades, it)
-            }
-
-            ByBitActionType.QUOTE -> symbols.map {
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.Tickers, it)
-            }
-
-            ByBitActionType.BAR_PER_MINUTE -> symbols.map {
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.Kline.One_Minute, it)
-            }
-
-            ByBitActionType.ORDERBOOK -> symbols.map {
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.Orderbook.Level_50, it)
-            }
-        }
-
         if (loadRecentTradeHistory) {
-            if (type == ByBitActionType.TRADE) {
-                symbols.forEach {
-                    val events = fetchRecentTradeHistoryEvents(it)
-                    recentTradeHistoryQueue.addAll(events)
-                }
-            } else logger.error("Can only use loadRecentTradeHistory when ActionType is TRADE")
+            symbols.forEach {
+                val events = fetchRecentTradeHistoryEvents(it)
+                recentTradeHistoryQueue.addAll(events)
+            }
         }
-        wsClient.subscribeBlocking(bybitSubs)
+
+        val tradeSubs = symbols.map {
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.Trades, it)
+        }
+        bybitSubscriptions.addAll(tradeSubs)
+
+        runBlocking {
+            wsClient.subscribe(tradeSubs)
+        }
+    }
+
+    fun subscribeOrderBook(vararg symbols: String,
+                           level: ByBitWebsocketTopic.Orderbook = ByBitWebsocketTopic.Orderbook.Level_50) {
+
+        val currency = when (endpoint) {
+            ByBitEndpoint.Spot, ByBitEndpoint.Linear -> {
+                Currency.USDT
+            }
+
+            ByBitEndpoint.Inverse -> {
+                Currency.BTC
+            }
+
+            ByBitEndpoint.Option -> {
+                Currency.USD
+            }
+
+            else -> {
+                Currency.USD
+            }
+        }
+
+        val assets = symbols.map {
+            Asset(
+                it,
+                if (endpoint == ByBitEndpoint.Inverse)
+                    AssetType.INVERSE
+                else
+                    AssetType.CRYPTO,
+                exchange = Exchange.CRYPTO, currency = currency
+            )
+        }
+            .associateBy { it.symbol }
+
+        subscriptions.putAll(assets)
+
+        val orderBookSubs = symbols.map {
+            ByBitWebSocketSubscription(level, it)
+        }
+        bybitSubscriptions.addAll(orderBookSubs)
+
+        runBlocking {
+            wsClient.subscribe(orderBookSubs)
+        }
     }
 
     override suspend fun play(channel: EventChannel) {
-        recentTradeHistoryQueue.forEach{
+        recentTradeHistoryQueue.forEach {
             channel.send(it)
         }
         super.play(channel)
@@ -326,7 +351,7 @@ class ByBitLiveFeed(
      * Disconnect from ByBit server and stop receiving market data
      */
     fun disconnect() {
-        wsClient.disconnectBlocking()
+        wsClient.disconnect()
     }
 
 

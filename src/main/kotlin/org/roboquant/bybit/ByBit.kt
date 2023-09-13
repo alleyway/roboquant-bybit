@@ -6,8 +6,6 @@ import bybit.sdk.rest.market.InstrumentsInfoResultItem
 import bybit.sdk.shared.Category
 import bybit.sdk.shared.ContractType
 import bybit.sdk.websocket.ByBitWebSocketClient
-import bybit.sdk.websocket.ByBitWebSocketListener
-import bybit.sdk.websocket.ByBitWebSocketMessage
 import bybit.sdk.websocket.WSClientConfigurableOptions
 import org.roboquant.common.*
 
@@ -39,38 +37,9 @@ internal object ByBit {
     }
 
     internal fun getWebSocketClient(
-        options: WSClientConfigurableOptions,
-        handler: (message: ByBitWebSocketMessage) -> Unit
+        options: WSClientConfigurableOptions
     ): ByBitWebSocketClient {
-
-        val websocketClient = ByBitWebSocketClient(
-            options,
-            object : ByBitWebSocketListener {
-
-                override fun onAuthenticated(client: ByBitWebSocketClient) {
-                    logger.trace("Authenticated")
-                }
-
-                override fun onReceive(client: ByBitWebSocketClient, message: ByBitWebSocketMessage) {
-                    handler(message)
-                }
-
-                override fun onReconnect(client: ByBitWebSocketClient) {
-                    logger.warn ("Reconnecting")
-                }
-
-                override fun onDisconnect(client: ByBitWebSocketClient) {
-                    logger.warn("Disconnected")
-                }
-
-                override fun onError(client: ByBitWebSocketClient, error: Throwable) {
-                    logger.error(error.toString())
-                }
-
-            })
-
-        return websocketClient
-
+        return ByBitWebSocketClient(options)
     }
 
     private fun InstrumentsInfoResultItem.toAsset(): Asset {

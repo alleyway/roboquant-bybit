@@ -15,6 +15,10 @@ import bybit.sdk.websocket.*
 import com.github.ajalt.mordant.rendering.TextColors
 import io.github.resilience4j.ratelimiter.RateLimiter
 import io.github.resilience4j.ratelimiter.RateLimiterConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import org.roboquant.brokers.*
 import org.roboquant.brokers.sim.execution.InternalAccount
 import org.roboquant.common.*
@@ -76,21 +80,29 @@ class ByBitBroker(
             config.secret,
             config.testnet
         )
-        wsClient = ByBit.getWebSocketClient(wsOptions, this::handler)
+        wsClient = ByBit.getWebSocketClient(wsOptions)
         assetMap = ByBit.availableAssets(client, category)
 
         updateAccount()
 
-        wsClient.connectBlocking()
 
-        wsClient.subscribeBlocking(
-            listOf(
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Execution),
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Order),
-                ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Wallet)
-            )
+        val subscriptions = listOf(
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Execution),
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Order),
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Wallet)
         )
 
+        val scope = CoroutineScope(Dispatchers.Default + Job())
+        scope.launch {
+            wsClient.connect(subscriptions)
+
+            val channel = wsClient.getWebSocketEventChannel()
+
+            while (true) {
+                val msg = channel.receive()
+                (this@ByBitBroker::handler)(msg)
+            }
+        }
     }
 
     override fun sync(event: Event) {

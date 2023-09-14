@@ -241,40 +241,58 @@ class ByBitLiveFeed(
         }.asReversed()
     }
 
+
+    private fun symbolsToAssets(symbols: Array<out String>): Map<String, Asset> {
+        val assets = symbols.map {
+            val notFutures = it.endsWith("USDT") || it.endsWith("USD")
+            var id = ""
+            val currency = when (endpoint) {
+                ByBitEndpoint.Spot -> {
+                    id = "spot::"
+                    Currency.USDT
+                }
+                ByBitEndpoint.Linear -> {
+                    id = if (notFutures) {
+                        "linearOrInverse::LinearPerpetual"
+                    } else {
+                        "linearOrInverse::LinearFutures"
+                    }
+                    Currency.USDT
+                }
+                ByBitEndpoint.Inverse -> {
+                    id = if (notFutures) {
+                        "linearOrInverse::InversePerpetual"
+                    } else {
+                        "linearOrInverse::InverseFutures"
+                    }
+                    Currency.BTC
+                }
+                ByBitEndpoint.Option -> {
+                    id = "option::"
+                    Currency.USD
+                }
+                else -> {
+                    Currency.USD
+                }
+            }
+            Asset(
+                it,
+                AssetType.CRYPTO,
+                currency = currency,
+                exchange = Exchange.CRYPTO,
+                id = id
+            )
+        }
+            .associateBy { it.symbol }
+        return assets
+    }
+
     fun subscribeTrade(
         vararg symbols: String,
         loadRecentTradeHistory: Boolean = false
     ) {
 
-        val currency = when (endpoint) {
-            ByBitEndpoint.Spot, ByBitEndpoint.Linear -> {
-                Currency.USDT
-            }
-
-            ByBitEndpoint.Inverse -> {
-                Currency.BTC
-            }
-
-            ByBitEndpoint.Option -> {
-                Currency.USD
-            }
-
-            else -> {
-                Currency.USD
-            }
-        }
-
-        val assets = symbols.map {
-            Asset(
-                it,
-                if (endpoint == ByBitEndpoint.Inverse)
-                    AssetType.INVERSE
-                else
-                    AssetType.CRYPTO,
-                exchange = Exchange.CRYPTO, currency = currency
-            )
-        }
-            .associateBy { it.symbol }
+        val assets = symbolsToAssets(symbols)
 
         subscriptions.putAll(assets)
 
@@ -298,35 +316,7 @@ class ByBitLiveFeed(
     fun subscribeOrderBook(vararg symbols: String,
                            level: ByBitWebsocketTopic.Orderbook = ByBitWebsocketTopic.Orderbook.Level_50) {
 
-        val currency = when (endpoint) {
-            ByBitEndpoint.Spot, ByBitEndpoint.Linear -> {
-                Currency.USDT
-            }
-
-            ByBitEndpoint.Inverse -> {
-                Currency.BTC
-            }
-
-            ByBitEndpoint.Option -> {
-                Currency.USD
-            }
-
-            else -> {
-                Currency.USD
-            }
-        }
-
-        val assets = symbols.map {
-            Asset(
-                it,
-                if (endpoint == ByBitEndpoint.Inverse)
-                    AssetType.INVERSE
-                else
-                    AssetType.CRYPTO,
-                exchange = Exchange.CRYPTO, currency = currency
-            )
-        }
-            .associateBy { it.symbol }
+        val assets = symbolsToAssets(symbols)
 
         subscriptions.putAll(assets)
 

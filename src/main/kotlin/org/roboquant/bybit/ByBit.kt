@@ -31,7 +31,8 @@ internal object ByBit {
 
 
     internal fun getRestClient(config: ByBitConfig): ByBitRestClient {
-        return ByBitRestClient(config.apiKey, config.secret, config.testnet,
+        return ByBitRestClient(
+            config.apiKey, config.secret, config.testnet,
 //            httpClientProvider = okHttpClientProvider
         )
     }
@@ -46,36 +47,39 @@ internal object ByBit {
 
         var currency = Currency.getInstance(this.quoteCoin)
 
-        val idPrefix = when(this) {
+        val id = when (this) {
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemSpot -> {
-                "spot"
+                "spot::"
             }
 
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemLinearInverse -> {
-//                "linearInverse"
+
                 when (this.contractType) {
                     ContractType.InversePerpetual, ContractType.InverseFutures -> {
                         currency = Currency.getInstance(this.baseCoin)
                     }
+
                     else -> {
                         // nothing
                     }
                 }
-                this.contractType
+                "linearOrInverse::${this.contractType}"
             }
+
             is InstrumentsInfoResultItem.InstrumentsInfoResultItemOption -> {
-                "option"
+                "option::"
             }
+
             else -> {
-                "unknown"
+                "unknown::"
             }
         }
         return Asset(
             this.symbol,
-            type = AssetType.INVERSE,
+            type = AssetType.CRYPTO,
             currency,
             Exchange.CRYPTO,
-//            id= "$idPrefix:${symbol}"
+            id = id
         )
     }
 

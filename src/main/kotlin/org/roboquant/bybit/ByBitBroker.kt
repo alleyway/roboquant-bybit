@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.roboquant.brokers.*
+import org.roboquant.brokers.sim.AccountModel
 import org.roboquant.brokers.sim.execution.InternalAccount
 import org.roboquant.common.*
 import org.roboquant.common.Currency
@@ -51,6 +52,7 @@ class ByBitBroker(
     private val wsClient: ByBitWebSocketClient
     private val _account = InternalAccount(baseCurrency)
     private val config = ByBitConfig()
+    private val accountModel: AccountModel = MarginAccountInverse(config.leverage, 0.5.percent)
 
     /**
      * @see Broker.account
@@ -61,6 +63,8 @@ class ByBitBroker(
     private val logger = Logging.getLogger(ByBitBroker::class)
     private val placedOrders = mutableMapOf<String, Int>()
     private val assetMap: Map<String, Asset>
+
+    private var lastExpensiveSync = Instant.MIN
 
     private val rateLimitConfig = RateLimiterConfig.custom()
         .limitForPeriod(10) // Allow 10 calls within a time window
@@ -109,12 +113,18 @@ class ByBitBroker(
         logger.debug { "Sync()" }
         _account.updateMarketPrices(event)
         _account.lastUpdate = event.time
-        // maybe once-in-awhile we're supposed to do some "expensive"
-        // syncing?
+
+        accountModel.updateAccount(_account)
+
+        val now = Instant.now()
+        val period = Duration.between(lastExpensiveSync, now)
+        if (period.seconds > 60) {
+            updateAccount()
+            lastExpensiveSync = event.time
+        }
     }
 
     private fun updateAccount() {
-        _account.portfolio.clear()
         syncAccountCash()
 
         when (category) {
@@ -127,16 +137,29 @@ class ByBitBroker(
                 ).result.list) {
                     assetMap[position.symbol]?.let {
                         val sign = if (position.side == Side.Sell) -1 else 1
-                        _account.setPosition(
-                            Position(
-                                it,
-                                size = Size(position.size.toDouble().times(sign)),
-//                                new_average_price = (existing_average_price * existing_shares + added_price * added_shares) / (existing_shares + added_shares)
-                                avgPrice = position.avgPrice.toDouble(),
-                                mktPrice = position.markPrice.toDouble(),
-                                lastUpdate = Instant.ofEpochMilli(position.updatedTime.toLong())
-                            )
-                        )
+                        val serverSize = Size(position.size.toDouble().times(sign))
+
+                        val p = _account.portfolio
+                        val currentPos = p.getOrDefault(it, Position.empty(it))
+
+                        if (serverSize.iszero && p.containsKey(it)) {
+                            p.remove(it)
+                        } else {
+                            if (currentPos.size != serverSize) {
+                                logger.warn { "Different position from server when syncing" }
+                                _account.setPosition(
+                                    Position(
+                                        it,
+                                        size = serverSize,
+                                        avgPrice = position.avgPrice.toDouble(),
+                                        mktPrice = position.markPrice.toDouble(),
+                                        lastUpdate = Instant.ofEpochMilli(position.updatedTime.toLong())
+                                    )
+                                )
+                            } else {
+
+                            }
+                        }
                     }
                 }
             }
@@ -164,7 +187,7 @@ class ByBitBroker(
 
 //        client.orderClient.orderOpen()
 
-        // TODO: Sync the open orders
+        // SHOULD_DO: Sync the open orders
 //        for (order in _account.orders) {
 //            val brokerOrder = api.getOrder(order.orderId)
 //
@@ -435,7 +458,6 @@ class ByBitBroker(
     }
 
 
-
     /**
      * @param orders
      * @return
@@ -504,7 +526,7 @@ class ByBitBroker(
             val now = Instant.now()
             _account.completeOrder(cancellation, now)
             try {
-                // TODO: maybe we want this to be a new OrderStatus like "CANCELLING"
+                // SHOULD_DO: maybe we want this to be a new OrderStatus like "CANCELLING"
                 _account.updateOrder(cancellation.order, Instant.now(), OrderStatus.CANCELLED)
 
             } catch (_: NoSuchElementException) {

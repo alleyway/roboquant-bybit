@@ -52,7 +52,7 @@ class ByBitBroker(
     private val wsClient: ByBitWebSocketClient
     private val _account = InternalAccount(baseCurrency)
     private val config = ByBitConfig()
-    private val accountModel: AccountModel = MarginAccountInverse(config.leverage, 0.5.percent)
+    private val accountModel: AccountModel
 
     /**
      * @see Broker.account
@@ -76,6 +76,7 @@ class ByBitBroker(
 
     init {
         config.configure()
+        accountModel = MarginAccountInverse(config.leverage, 0.5.percent)
         client = ByBit.getRestClient(config)
 
         val wsOptions = WSClientConfigurableOptions(
@@ -88,7 +89,7 @@ class ByBitBroker(
         assetMap = ByBit.availableAssets(client, category)
 
         updateAccount()
-
+        accountModel.updateAccount(_account)
 
         val subscriptions = listOf(
             ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Execution),
@@ -291,9 +292,16 @@ class ByBitBroker(
 
                 for (coinItem in (message.data.filter { it.accountType == AccountType.CONTRACT }).first().coin) {
                     if (coinItem.coin == "BTC") {
+                        // available to withdraw removes orders on the books
                         val walletBalance = coinItem.walletBalance.toDouble()
+                        val unrealizedPnL = coinItem.unrealisedPnl.toDouble()
+                        val totalPositionIM = coinItem.totalPositionIM.toDouble()
+                        val totalOrderIM = coinItem.totalOrderIM.toDouble()
                         logger.debug("ByBitWebSocketMessage.PrivateTopicResponse.Wallet | walletBalance: $walletBalance")
-                        _account.cash.set(Currency.getInstance(coinItem.coin), walletBalance)
+
+                        val cash = walletBalance + unrealizedPnL - totalPositionIM - totalOrderIM
+
+                        _account.cash.set(Currency.getInstance(coinItem.coin), cash)
                     }
                 }
 
@@ -375,7 +383,7 @@ class ByBitBroker(
 //            _account.cash.set(Currency.getInstance(coinItem.coin), equityValue)
 
             // WARNING: be sure to sync with what's happening in the WS wallet updates too!
-            val walletBalance = coinItem.walletBalance.toDouble()
+            val walletBalance = coinItem.availableToWithdraw.toDouble()
             logger.info("syncAccountCash() walletBalance: $walletBalance")
             _account.cash.set(Currency.getInstance(coinItem.coin), walletBalance)
 

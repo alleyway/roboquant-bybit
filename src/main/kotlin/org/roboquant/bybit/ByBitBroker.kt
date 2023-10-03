@@ -121,7 +121,7 @@ class ByBitBroker(
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
             updateAccount()
-            lastExpensiveSync = event.time
+            lastExpensiveSync = now
         }
     }
 

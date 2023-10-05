@@ -7,6 +7,7 @@ import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
 import bybit.sdk.rest.order.AmendOrderParams
 import bybit.sdk.rest.order.CancelOrderParams
+import bybit.sdk.rest.order.OrdersOpenParams
 import bybit.sdk.rest.order.PlaceOrderParams
 import bybit.sdk.rest.position.PositionInfoParams
 import bybit.sdk.shared.*
@@ -74,6 +75,8 @@ class ByBitBroker(
 
     private val rateLimiter = RateLimiter.of("broker", rateLimitConfig)
 
+    private val accountType: AccountType
+
     init {
         config.configure()
         accountModel = MarginAccountInverse(config.leverage, 0.5.percent)
@@ -88,7 +91,21 @@ class ByBitBroker(
         wsClient = ByBit.getWebSocketClient(wsOptions)
         assetMap = ByBit.availableAssets(client, category)
 
-        updateAccount()
+        accountType = when (category) {
+            Category.inverse, Category.linear -> {
+                AccountType.CONTRACT
+            }
+
+            Category.spot -> {
+                AccountType.SPOT
+            }
+
+            Category.option -> {
+                AccountType.OPTION
+            }
+        }
+
+        updateAccountFromAPI()
         accountModel.updateAccount(_account)
 
         val subscriptions = listOf(
@@ -108,6 +125,8 @@ class ByBitBroker(
                 (this@ByBitBroker::handler)(msg)
             }
         }
+
+
     }
 
     override fun sync(event: Event) {
@@ -120,13 +139,16 @@ class ByBitBroker(
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
-            updateAccount()
+            updateAccountFromAPI()
             lastExpensiveSync = now
         }
     }
 
-    private fun updateAccount() {
-        syncAccountCash()
+    private fun updateAccountFromAPI() {
+
+        syncOrdersFromAPI()
+        syncAccountCashFromAPI()
+
 
         when (category) {
             Category.linear, Category.inverse, Category.option -> {
@@ -229,7 +251,7 @@ class ByBitBroker(
 
                 for (order in message.data) {
                     val orderId = placedOrders[order.orderLinkId] ?: continue
-                    val state = _account.getOrder(orderId) ?: continue
+                    val accountOrder = _account.getOrder(orderId) ?: continue
 
                     when (order.orderStatus) {
                         bybit.sdk.shared.OrderStatus.New -> {
@@ -237,20 +259,20 @@ class ByBitBroker(
                             // it was found in our placedOrders map, so must have already existed
                             // state might be an instance of "UpdateOrder"
 
-                            when (state) {
+                            when (accountOrder) {
                                 is UpdateOrder -> {
 //                                    _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
                                 }
 
                                 else -> {
                                     // logger.info("WS: bybit.OrderStatus.New -> roboquant.OrderStatus.ACCEPTED")
-                                    _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                                    _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
                                 }
                             }
                         }
 
                         bybit.sdk.shared.OrderStatus.Filled -> {
-                            _account.updateOrder(state, Instant.now(), OrderStatus.COMPLETED)
+                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.COMPLETED)
                         }
 
                         bybit.sdk.shared.OrderStatus.PartiallyFilled -> {
@@ -265,23 +287,23 @@ class ByBitBroker(
                         bybit.sdk.shared.OrderStatus.PartiallyFilledCanceled
                         -> {
                             logger.trace { "cancelled order: ${order.orderId}" }
-                            _account.updateOrder(state, Instant.now(), OrderStatus.CANCELLED)
+                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.CANCELLED)
                         }
 
 //                bybit.sdk.shared.OrderStatus.Exp ->
 //                    _account.updateOrder(state, Instant.now(), OrderStatus.EXPIRED)
 
                         bybit.sdk.shared.OrderStatus.Rejected ->
-                            _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
+                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.REJECTED)
 
                         else -> {
                             // NOTE: an amended order will show up here with OrderStatus "New"
                             logger.debug(
-                                "WS update ( price: ${(state as LimitOrder).limit} ) with orderLinkId: " + TextColors.gray(
+                                "WS update ( price: ${(accountOrder as LimitOrder).limit} ) with orderLinkId: " + TextColors.gray(
                                     order.orderLinkId
                                 )
                             )
-                            _account.updateOrder(state, Instant.now(), OrderStatus.ACCEPTED)
+                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
                         }
                     }
                 }
@@ -356,22 +378,35 @@ class ByBitBroker(
     val availableAssets
         get() = assetMap.values.toSortedSet()
 
+    private fun syncOrdersFromAPI() {
 
-    private fun syncAccountCash() {
+        val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category))
 
-        val accountType = when (category) {
-            Category.inverse, Category.linear -> {
-                AccountType.CONTRACT
-            }
+        if (ordersOpenResponse.retCode != 0) {
+            logger.error { "Unable to syncOrdersFromAPI: " + ordersOpenResponse.retMsg }
+        } else {
 
-            Category.spot -> {
-                AccountType.SPOT
-            }
+            val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
 
-            Category.option -> {
-                AccountType.OPTION
+            placedOrders.entries.forEach {
+                val orderState = _account.getOrderState(it.value)
+
+                if (orderState != null
+                    && !openOrderLinkIds.contains(it.key)
+                    && orderState.status != OrderStatus.INITIAL
+                ) {
+                    logger.warn(
+                        "Rejecting order that existed in _account.openOrders, but was not found on server:\n "
+                        + "${orderState.order} "
+                    )
+                    val now = Instant.now()
+                    _account.updateOrder(orderState.order, now, OrderStatus.REJECTED)
+                }
             }
         }
+    }
+
+    private fun syncAccountCashFromAPI() {
 
         val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(accountType))
 
@@ -436,7 +471,7 @@ class ByBitBroker(
         if (rqOrderId !== null && execution.leavesQty == "0") {
             _account.getOrder(rqOrderId)?.let {
 //                logger.debug("WS Execution leaves 0 qty, update order status to completed")
-                _account.updateOrder(it, Instant.now(), OrderStatus.COMPLETED)
+                _account.completeOrder(it, Instant.now())
             }
         }
 
@@ -484,15 +519,15 @@ class ByBitBroker(
                 is LimitOrder -> {
                     val symbol = order.asset.symbol
                     val orderLinkId = genOrderLinkId()
-                    trade(orderLinkId, symbol, order)
                     placedOrders[orderLinkId] = order.id
+                    trade(orderLinkId, symbol, order)
                 }
 
                 is MarketOrder -> {
                     val symbol = order.asset.symbol
                     val orderLinkId = genOrderLinkId()
-                    trade(orderLinkId, symbol, order)
                     placedOrders[orderLinkId] = order.id
+                    trade(orderLinkId, symbol, order)
 
                 }
 
@@ -554,6 +589,15 @@ class ByBitBroker(
                             orderLinkId = orderLinkId
                         )
                     )
+
+                } catch (e: CustomResponseException) {
+                    if (e.retCode == 110001) { // order does not exist
+                        logger.warn("Tried to cancel order that did not exist. OrderLinkId: $orderLinkId")
+                        _account.rejectOrder(cancellation.order, Instant.now())
+                        _account.rejectOrder(cancellation, Instant.now())
+                    } else {
+                        logger.error(e.message)
+                    }
                 } catch (e: Exception) {
                     logger.error(e.message)
                 }
@@ -606,16 +650,17 @@ class ByBitBroker(
                         orderLinkId = orderLinkId,
                     )
                 )
+
+                val orderId = placedOrders[orderLinkId]
+                val accountOrder = _account.getOrder(orderId!!)
+
                 if (response.retCode != 0) {
-                    logger.warn { response.retMsg }
-                    val orderId = placedOrders[orderLinkId]
-                    orderId?.let {
-                        val state = _account.getOrder(orderId)
-                        state?.let {
-                            _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
-                        }
-                    }
+                    logger.warn { "NonZero retCode creating Order: " + response.retMsg }
+                    accountOrder?.let { _account.rejectOrder(it, Instant.now()) }
+                } else {
+                    accountOrder?.let { _account.acceptOrder(it, Instant.now()) }
                 }
+
             } catch (e: Exception) {
                 logger.error(e.message)
             }
@@ -638,6 +683,7 @@ class ByBitBroker(
         // Order quantity. For Spot Market Buy order, please note that qty should be quote currency amount
 
         rateLimiter.executeRunnable {
+
             try {
                 val response = client.orderClient.placeOrderBlocking(
                     PlaceOrderParams(
@@ -653,16 +699,17 @@ class ByBitBroker(
                         orderLinkId = orderLinkId
                     )
                 )
+
+                val orderId = placedOrders[orderLinkId]
+                val accountOrder = _account.getOrder(orderId!!)
+
                 if (response.retCode != 0) {
-                    logger.warn { response.retMsg }
-                    val orderId = placedOrders[orderLinkId]
-                    orderId?.let {
-                        val state = _account.getOrder(orderId)
-                        state?.let {
-                            _account.updateOrder(state, Instant.now(), OrderStatus.REJECTED)
-                        }
-                    }
+                    logger.warn { "NonZero retCode creating Order: " + response.retMsg }
+                    accountOrder?.let { _account.rejectOrder(it, Instant.now()) }
+                } else {
+                    accountOrder?.let { _account.acceptOrder(it, Instant.now()) }
                 }
+
             } catch (e: Exception) {
                 logger.error(e.message)
             }
@@ -673,11 +720,6 @@ class ByBitBroker(
     private fun amend(symbol: String, order: UpdateOrder, orderLinkId: String) {
         if (category == Category.spot) throw Exception("Unable to amend orders for spot according to bybit docs")
 
-
-        if (_account.getOrder(order.order.id) !== null)
-            _account.updateOrder(order, Instant.now(), OrderStatus.ACCEPTED)
-        else
-            _account.updateOrder(order, Instant.now(), OrderStatus.REJECTED)
 
         when (order.update) {
             is LimitOrder -> {
@@ -701,7 +743,7 @@ class ByBitBroker(
                 )
 
                 rateLimiter.executeRunnable {
-                    val updatedOrderResponse = client.orderClient.amendOrderBlocking(
+                    val response = client.orderClient.amendOrderBlocking(
                         AmendOrderParams(
                             category,
                             symbol,
@@ -710,7 +752,15 @@ class ByBitBroker(
                             price = price
                         )
                     )
-                    logger.info { "$updatedOrderResponse" }
+                    val orderId = placedOrders[orderLinkId]
+                    val accountOrder = _account.getOrder(orderId!!)
+
+                    if (response.retCode != 0) {
+                        logger.warn { "NonZero retCode creating Order: " + response.retMsg }
+                        accountOrder?.let { _account.rejectOrder(it, Instant.now()) }
+                    } else {
+                        accountOrder?.let { _account.acceptOrder(it, Instant.now()) }
+                    }
                 }
             }
 

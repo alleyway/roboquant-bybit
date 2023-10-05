@@ -593,7 +593,9 @@ class ByBitBroker(
                 } catch (e: CustomResponseException) {
                     if (e.retCode == 110001) { // order does not exist
                         logger.warn("Tried to cancel order that did not exist. OrderLinkId: $orderLinkId")
-                        _account.rejectOrder(cancellation.order, Instant.now())
+                        if (_account.getOrder(cancellation.order.id) != null) {
+                            _account.rejectOrder(cancellation.order, Instant.now())
+                        }
                         _account.rejectOrder(cancellation, Instant.now())
                     } else {
                         logger.error(e.message)

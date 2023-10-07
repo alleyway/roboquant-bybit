@@ -596,7 +596,9 @@ class ByBitBroker(
                         if (_account.getOrder(cancellation.order.id) != null) {
                             _account.rejectOrder(cancellation.order, Instant.now())
                         }
-                        _account.rejectOrder(cancellation, Instant.now())
+                        if (_account.getOrder(cancellation.id) != null) {
+                            _account.rejectOrder(cancellation, Instant.now())
+                        }
                     } else {
                         logger.error(e.message)
                     }

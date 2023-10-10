@@ -536,9 +536,11 @@ class ByBitBroker(
                     try {
                         val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
                         if (orderLinkId != null) {
-                            placedOrders[orderLinkId] = order.id
+//                            placedOrders[orderLinkId] = order.id
                             logger.debug("amend() will update status for orderLinkId: ${orderLinkId}")
-                            amend(symbol, order, orderLinkId)
+                            amend(orderLinkId, symbol, order)
+                        } else {
+                            logger.warn("")
                         }
                     } catch (error: CustomResponseException) {
                         logger.warn(error.message)
@@ -721,9 +723,8 @@ class ByBitBroker(
     }
 
 
-    private fun amend(symbol: String, order: UpdateOrder, orderLinkId: String) {
+    private fun amend(orderLinkId: String, symbol: String, order: UpdateOrder, ) {
         if (category == Category.spot) throw Exception("Unable to amend orders for spot according to bybit docs")
-
 
         when (order.update) {
             is LimitOrder -> {
@@ -733,18 +734,26 @@ class ByBitBroker(
                 // only update qty or price if different from original otherwise API complains
                 val qty = when (updatedLimitOrder.size == originalLimitOrder.size) {
                     true -> null
-                    false -> updatedLimitOrder.size.absoluteValue.toString()
+                    false -> {
+                        logger.info(
+                            "Amending order qty: from ${originalLimitOrder.size} to ${updatedLimitOrder.size} " + TextColors.gray(
+                                orderLinkId
+                            )
+                        )
+                        updatedLimitOrder.size.absoluteValue.toString()
+                    }
                 }
                 val price = when (updatedLimitOrder.limit.equals(originalLimitOrder.limit)) {
                     true -> null
-                    false -> updatedLimitOrder.limit.toString()
+                    false -> {
+                        logger.info(
+                            "Amending order price from ${originalLimitOrder.limit} to ${updatedLimitOrder.limit} " + TextColors.gray(
+                                orderLinkId
+                            )
+                        )
+                        updatedLimitOrder.limit.toString()
+                    }
                 }
-
-                logger.info(
-                    "Amending order from ${originalLimitOrder.limit} to ${updatedLimitOrder.limit} " + TextColors.gray(
-                        orderLinkId
-                    )
-                )
 
                 rateLimiter.executeRunnable {
                     val response = client.orderClient.amendOrderBlocking(

@@ -139,14 +139,17 @@ class ByBitBroker(
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
+
+            // possibly launch an coroutine to return immediately
             updateAccountFromAPI()
+
             lastExpensiveSync = now
         }
     }
 
     private fun updateAccountFromAPI() {
 
-        syncOrdersFromAPI()
+        // syncOrdersFromAPI()
         syncAccountCashFromAPI()
 
 
@@ -378,6 +381,13 @@ class ByBitBroker(
     val availableAssets
         get() = assetMap.values.toSortedSet()
 
+
+    /**
+     * There's a little issue where the response only returns max 50 in one call
+     * Therefore if you have a lot of orders before consolidation they wouldn't
+     * show up. Maybe in the future paginate orders and run in coroutine, but...slow.
+     */
+
     private fun syncOrdersFromAPI() {
 
         val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category))
@@ -565,50 +575,47 @@ class ByBitBroker(
 
         val orderLinkId = placedOrders.entries.find { it.value == cancellation.order.id }?.key
 
+        if (orderLinkId == null) {
+            logger.error("Unable to find order.id in placedOrders: ${cancellation.order.id}")
+            return
+        }
 
-        if (orderLinkId !== null) {
-            //placedOrders.entries.remove(entry)
-            val now = Instant.now()
-            _account.completeOrder(cancellation, now)
+        rateLimiter.executeRunnable {
             try {
-                // SHOULD_DO: maybe we want this to be a new OrderStatus like "CANCELLING"
-                _account.updateOrder(cancellation.order, Instant.now(), OrderStatus.CANCELLED)
+                val order = cancellation.order
 
-            } catch (_: NoSuchElementException) {
-                logger.warn("NoSuchElementException trying to cancel order: ${cancellation.order}")
-                return
-            }
-
-            rateLimiter.executeRunnable {
-
-                try {
-                    val order = cancellation.order
-
-                    client.orderClient.cancelOrderBlocking(
-                        CancelOrderParams(
-                            category,
-                            symbol = order.asset.symbol,
-                            orderLinkId = orderLinkId
-                        )
+                val response = client.orderClient.cancelOrderBlocking(
+                    CancelOrderParams(
+                        category,
+                        symbol = order.asset.symbol,
+                        orderLinkId = orderLinkId
                     )
+                )
 
-                } catch (e: CustomResponseException) {
-                    if (e.retCode == 110001) { // order does not exist
-                        logger.warn("Tried to cancel order that did not exist. OrderLinkId: $orderLinkId")
-                        if (_account.getOrder(cancellation.order.id) != null) {
-                            _account.rejectOrder(cancellation.order, Instant.now())
-                        }
-                        if (_account.getOrder(cancellation.id) != null) {
-                            _account.rejectOrder(cancellation, Instant.now())
-                        }
-                    } else {
-                        logger.error(e.message)
+                if (response.retCode != 0) {
+                    logger.warn { "NonZero retCode cancelling Order: " + response.retMsg }
+                    _account.rejectOrder(order, Instant.now())
+                } else {
+                    _account.completeOrder(order, Instant.now())
+                }
+
+            } catch (e: CustomResponseException) {
+                if (e.retCode == 110001) { // order does not exist
+                    logger.warn("Tried to cancel order that did not exist. OrderLinkId: $orderLinkId")
+                    if (_account.getOrder(cancellation.order.id) != null) {
+                        _account.rejectOrder(cancellation.order, Instant.now())
                     }
-                } catch (e: Exception) {
+                    if (_account.getOrder(cancellation.id) != null) {
+                        _account.rejectOrder(cancellation, Instant.now())
+                    }
+                } else {
                     logger.error(e.message)
                 }
+            } catch (e: Exception) {
+                logger.error(e.message)
             }
         }
+
     }
 
     /**

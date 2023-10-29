@@ -7,7 +7,6 @@ import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
 import bybit.sdk.rest.order.AmendOrderParams
 import bybit.sdk.rest.order.CancelOrderParams
-import bybit.sdk.rest.order.OrdersOpenParams
 import bybit.sdk.rest.order.PlaceOrderParams
 import bybit.sdk.rest.position.PositionInfoParams
 import bybit.sdk.shared.*
@@ -388,33 +387,33 @@ class ByBitBroker(
      * show up. Maybe in the future paginate orders and run in coroutine, but...slow.
      */
 
-    private fun syncOrdersFromAPI() {
-
-        val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category))
-
-        if (ordersOpenResponse.retCode != 0) {
-            logger.error { "Unable to syncOrdersFromAPI: " + ordersOpenResponse.retMsg }
-        } else {
-
-            val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
-
-            placedOrders.entries.forEach {
-                val orderState = _account.getOrderState(it.value)
-
-                if (orderState != null
-                    && !openOrderLinkIds.contains(it.key)
-                    && orderState.status != OrderStatus.INITIAL
-                ) {
-                    logger.warn(
-                        "Rejecting order that existed in _account.openOrders, but was not found on server:\n "
-                        + "${orderState.order} "
-                    )
-                    val now = Instant.now()
-                    _account.updateOrder(orderState.order, now, OrderStatus.REJECTED)
-                }
-            }
-        }
-    }
+//    private fun syncOrdersFromAPI() {
+//
+//        val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category))
+//
+//        if (ordersOpenResponse.retCode != 0) {
+//            logger.error { "Unable to syncOrdersFromAPI: " + ordersOpenResponse.retMsg }
+//        } else {
+//
+//            val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
+//
+//            placedOrders.entries.forEach {
+//                val orderState = _account.getOrderState(it.value)
+//
+//                if (orderState != null
+//                    && !openOrderLinkIds.contains(it.key)
+//                    && orderState.status != OrderStatus.INITIAL
+//                ) {
+//                    logger.warn(
+//                        "Rejecting order that existed in _account.openOrders, but was not found on server:\n "
+//                        + "${orderState.order} "
+//                    )
+//                    val now = Instant.now()
+//                    _account.updateOrder(orderState.order, now, OrderStatus.REJECTED)
+//                }
+//            }
+//        }
+//    }
 
     private fun syncAccountCashFromAPI() {
 

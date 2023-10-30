@@ -140,10 +140,20 @@ class ByBitLiveFeed(
                 }
 
                 message.data.asks.forEach {
-                    cachedAsks.put(it[0], it[1])
+                    // 0 = price, 1 = volume
+                    if (it[1] == 0.0) {
+                        cachedAsks.remove(it[0])
+                    } else {
+                        cachedAsks[it[0]] = it[1]
+                    }
                 }
+
                 message.data.bids.forEach {
-                    cachedBids.put(it[0], it[1])
+                    if (it[1] == 0.0) {
+                        cachedBids.remove(it[0])
+                    } else {
+                        cachedBids[it[0]] = it[1]
+                    }
                 }
 
                 val asks: List<OrderBook.OrderBookEntry> =

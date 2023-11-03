@@ -8,7 +8,10 @@ import bybit.sdk.rest.account.WalletBalanceParams
 import bybit.sdk.rest.order.AmendOrderParams
 import bybit.sdk.rest.order.CancelOrderParams
 import bybit.sdk.rest.order.PlaceOrderParams
+import bybit.sdk.rest.position.ClosedPnLParams
+import bybit.sdk.rest.position.ClosedPnLResponseItem
 import bybit.sdk.rest.position.PositionInfoParams
+import bybit.sdk.rest.position.closedPnLs
 import bybit.sdk.shared.*
 import bybit.sdk.shared.TimeInForce
 import bybit.sdk.websocket.*
@@ -126,6 +129,22 @@ class ByBitBroker(
         }
 
 
+    }
+
+    suspend fun fetchClosedPnLs(
+        symbol: String? = null,
+        startTime: Long? = null,
+        endTime: Long? = null,
+        limit: Int = 50
+    ): List<ClosedPnLResponseItem>? {
+        val resp = client.positionClient.closedPnLs(ClosedPnLParams(category, symbol, startTime, endTime, limit))
+
+        return if (resp.retCode == 0) {
+            resp.result.list
+        } else {
+            logger.error { "unable to fetch closed PnLs: " + resp.retMsg }
+            null
+        }
     }
 
     override fun sync(event: Event) {
@@ -729,7 +748,7 @@ class ByBitBroker(
     }
 
 
-    private fun amend(orderLinkId: String, symbol: String, order: UpdateOrder, ) {
+    private fun amend(orderLinkId: String, symbol: String, order: UpdateOrder) {
         if (category == Category.spot) throw Exception("Unable to amend orders for spot according to bybit docs")
 
         when (order.update) {

@@ -5,9 +5,7 @@ package org.roboquant.bybit
 import bybit.sdk.CustomResponseException
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
-import bybit.sdk.rest.order.AmendOrderParams
-import bybit.sdk.rest.order.CancelOrderParams
-import bybit.sdk.rest.order.PlaceOrderParams
+import bybit.sdk.rest.order.*
 import bybit.sdk.rest.position.ClosedPnLParams
 import bybit.sdk.rest.position.ClosedPnLResponseItem
 import bybit.sdk.rest.position.PositionInfoParams
@@ -535,14 +533,14 @@ class ByBitBroker(
      */
     override fun place(orders: List<Order>, time: Instant) {
         logger.trace { "Received orders=${orders.size} time=$time" }
-
-//        if (time < Instant.now() - 1.hours) throw UnsupportedException("cannot place orders in the past")
-
         _account.initializeOrders(orders)
+
+        val cancelAllOrders = orders.filterIsInstance<CancelOrder>().filter { it.tag == "CancelAll" }
+        if (cancelAllOrders.isNotEmpty()) cancelAllOrders(cancelAllOrders)
 
         for (order in orders) {
             when (order) {
-                is CancelOrder -> cancelOrder(order)
+                is CancelOrder -> if (order.tag != "CancelAll") cancelOrder(order)
 
                 is LimitOrder -> {
                     val symbol = order.asset.symbol
@@ -635,6 +633,52 @@ class ByBitBroker(
         }
 
     }
+
+
+    private fun cancelAllOrders(cancelOrders: List<CancelOrder>) {
+        logger.debug { "Running cancelAllOrders()" }
+        rateLimiter.executeRunnable {
+            try {
+                val response = client.orderClient.cancelAllOrdersBlocking(
+                    CancelAllOrdersParams(category, symbol = cancelOrders[0].asset.symbol)
+                )
+                if (response.retCode != 0) {
+                    logger.warn { "NonZero retCode cancelling All Orders: " + response.retMsg }
+                } else {
+                    when (response) {
+                        is CancelAllOrdersResponse.CancelAllOrdersResponseOther -> {
+                            response.result.list.forEach { item ->
+                                val id = placedOrders[item.orderLinkId]
+                                id?.let {
+                                    _account.getOrder(id)?.let {
+                                        _account.updateOrder(it, Instant.now(), OrderStatus.CANCELLED)
+                                    }
+                                    cancelOrders.firstOrNull { it.order.id == id }?.let { cancelOrder ->
+                                        _account.updateOrder(cancelOrder, Instant.now(), OrderStatus.COMPLETED)
+                                    }
+                                }
+                            }
+                        }
+
+                        is CancelAllOrdersResponse.CancelAllOrdersResponseSpot -> {
+                            logger.warn { "Unfortunately bybit doesn't return orderLinkIds for SPOT!" }
+                        }
+
+                        else -> {
+                            logger.error { "Unknown response type when cancelling all orders: ${response}" }
+                        }
+                    }
+
+                }
+            } catch (e: CustomResponseException) {
+                logger.error(e.message)
+            } catch (e: Exception) {
+                logger.error(e.message)
+            }
+        }
+
+    }
+
 
     /**
      * Place a limit order for a currency pair

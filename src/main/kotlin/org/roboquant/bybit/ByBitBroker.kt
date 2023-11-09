@@ -105,7 +105,12 @@ class ByBitBroker(
             }
         }
 
-        updateAccountFromAPI()
+        try {
+            updateAccountFromAPI()
+        } catch (e: Exception) {
+            logger.error { "exception running updateAccountFromAPI(): ${e.message}" }
+        }
+
         accountModel.updateAccount(_account)
 
         val subscriptions = listOf(
@@ -171,39 +176,56 @@ class ByBitBroker(
 
         when (category) {
             Category.linear, Category.inverse, Category.option -> {
-                for (position in client.positionClient.getPositionInfoBlocking(
+                val serverPositions = client.positionClient.getPositionInfoBlocking(
                     PositionInfoParams(
                         category,
                         settleCoin = baseCurrency.currencyCode
                     )
-                ).result.list) {
-                    assetMap[position.symbol]?.let {
-                        val sign = if (position.side == Side.Sell) -1 else 1
-                        val serverSize = Size(position.size.toDouble().times(sign))
+                ).result.list
 
-                        val p = _account.portfolio
-                        val currentPos = p.getOrDefault(it, Position.empty(it))
+                val p = _account.portfolio
 
-                        if (serverSize.iszero && p.containsKey(it)) {
-                            p.remove(it)
+                p.keys.forEach{ asset ->
+                    if (serverPositions.none { it.symbol == asset.symbol }) {
+                        logger.warn { "Had to remove Roboquant position that didn't exist on server: $asset" }
+                        p.remove(asset)
+                    }
+                }
+
+                serverPositions.forEach { serverPosition ->
+
+                    val asset = assetMap[serverPosition.symbol]
+
+                    if (asset == null) {
+                        logger.warn { "Found serverPosition with symbol not in assetMap" }
+                    } else {
+
+                        val sign = if (serverPosition.side == Side.Sell) -1 else 1
+                        val serverSize = Size(serverPosition.size.toDouble().times(sign))
+
+                        val currentPos = p.getOrDefault(asset, Position.empty(asset))
+
+                        if (serverSize.iszero && p.containsKey(asset)) {
+                            p.remove(asset)
                         } else {
                             if (currentPos.size != serverSize) {
                                 logger.warn { "Different position from server when syncing" }
                                 _account.setPosition(
                                     Position(
-                                        it,
+                                        asset,
                                         size = serverSize,
-                                        avgPrice = position.avgPrice.toDouble(),
-                                        mktPrice = position.markPrice.toDouble(),
-                                        lastUpdate = Instant.ofEpochMilli(position.updatedTime.toLong())
+                                        avgPrice = serverPosition.avgPrice.toDouble(),
+                                        mktPrice = serverPosition.markPrice.toDouble(),
+                                        lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong())
                                     )
                                 )
-                            } else {
-
                             }
                         }
                     }
+
                 }
+
+
             }
 
             Category.spot -> {
@@ -690,18 +712,18 @@ class ByBitBroker(
 
         val amount = when (category) {
             Category.spot -> {
-                order.size.absoluteValue.toBigDecimal().setScale(6, RoundingMode.DOWN)
+                order.size.absoluteValue
             }
 
             else -> {
-                order.size.absoluteValue.toBigDecimal().setScale(0, RoundingMode.DOWN)
+                order.size.absoluteValue
 //                Size(
 //                    (order.size.absoluteValue * order.limit).toBigDecimal().setScale(0, RoundingMode.HALF_UP)
 //                ).toBigDecimal()
             }
         }
 
-        val price = order.limit.toBigDecimal().setScale(2, RoundingMode.DOWN)
+        val price = order.limit
 
         rateLimiter.executeRunnable {
 
@@ -718,9 +740,9 @@ class ByBitBroker(
                             Side.Sell
                         },
                         OrderType.Limit,
-                        amount.toPlainString(),
+                        amount.toBigDecimal().toPlainString(),
                         reduceOnly = reduceOnly,
-                        price.toPlainString(),
+                        price.toBigDecimal().toPlainString(),
                         timeInForce = TimeInForce.PostOnly,
                         orderLinkId = orderLinkId,
                     )
@@ -792,13 +814,13 @@ class ByBitBroker(
     }
 
 
-    private fun amend(orderLinkId: String, symbol: String, order: UpdateOrder) {
+    private fun amend(orderLinkId: String, symbol: String, updateOrder: UpdateOrder) {
         if (category == Category.spot) throw Exception("Unable to amend orders for spot according to bybit docs")
 
-        when (order.update) {
+        when (updateOrder.update) {
             is LimitOrder -> {
-                val originalLimitOrder = order.order as LimitOrder
-                val updatedLimitOrder = order.update as LimitOrder
+                val originalLimitOrder = updateOrder.order as LimitOrder
+                val updatedLimitOrder = updateOrder.update as LimitOrder
 
                 // only update qty or price if different from original otherwise API complains
                 val qty = when (updatedLimitOrder.size == originalLimitOrder.size) {
@@ -825,29 +847,32 @@ class ByBitBroker(
                 }
 
                 rateLimiter.executeRunnable {
-                    val response = client.orderClient.amendOrderBlocking(
-                        AmendOrderParams(
-                            category,
-                            symbol,
-                            orderLinkId = orderLinkId,
-                            qty = qty,
-                            price = price
-                        )
-                    )
-                    val orderId = placedOrders[orderLinkId]
-                    val accountOrder = _account.getOrder(orderId!!)
 
-                    if (response.retCode != 0) {
-                        logger.warn { "NonZero retCode creating Order: " + response.retMsg }
-                        accountOrder?.let { _account.rejectOrder(it, Instant.now()) }
-                    } else {
-                        accountOrder?.let { _account.acceptOrder(it, Instant.now()) }
+                    try {
+                        client.orderClient.amendOrderBlocking(
+                            AmendOrderParams(
+                                category,
+                                symbol,
+                                orderLinkId = orderLinkId,
+                                qty = qty,
+                                price = price
+                            )
+                        )
+
+                        _account.completeOrder(updateOrder, Instant.now())
+                        _account.updateOrder(updateOrder.update, Instant.now(), OrderStatus.ACCEPTED)
+
+                    } catch (e: CustomResponseException) {
+                        logger.error { "Unable to amend order, server error: ${e.retMsg}" }
+                        _account.rejectOrder(updateOrder, Instant.now())
+                    } catch (e: Exception) {
+                        logger.error { e.message.toString() }
                     }
                 }
             }
 
             else -> {
-                throw Exception("Tried to amend non-limit order type: ${order.update::class}")
+                throw Exception("Tried to amend non-limit order type: ${updateOrder.update::class}")
             }
         }
 

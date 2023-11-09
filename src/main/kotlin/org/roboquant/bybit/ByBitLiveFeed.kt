@@ -12,31 +12,6 @@ import org.roboquant.feeds.*
 import java.lang.Integer.parseInt
 import java.time.Instant
 
-/**
- * Types of Price actions that can be subscribed to
- */
-enum class ByBitActionType {
-
-    /**
-     * [TradePrice] actions
-     */
-    TRADE,
-
-    /**
-     * [PriceQuote] actions
-     */
-    QUOTE,
-
-    /**
-     * [OrderBook] actions
-     */
-    ORDERBOOK,
-
-    /**
-     * [PriceBar] actions aggregated per minute
-     */
-    BAR_PER_MINUTE,
-}
 
 /**
  *
@@ -181,6 +156,16 @@ class ByBitLiveFeed(
                 } else {
                     logger.warn { "non-snapshot received for TickerLinearInverse" }
                 }
+            }
+
+            is ByBitWebSocketMessage.TopicResponse.Liquidation -> {
+                val liqItem = message.data
+                val asset = getSubscribedAsset(liqItem.symbol)
+                val action = Liquidation(asset,
+                    liqItem.price,
+                    liqItem.side,
+                    liqItem.size  )
+                    send(Event(listOf(action), getTime(message.ts)))
             }
 
 //            is ByBitWebSocketMessage.TopicResponse.TickerSpot -> {
@@ -337,6 +322,22 @@ class ByBitLiveFeed(
 
         runBlocking {
             wsClient.subscribe(orderBookSubs)
+        }
+    }
+
+    fun subscribeLiquidations(vararg symbols: String) {
+
+        val assets = symbolsToAssets(symbols)
+
+        subscriptions.putAll(assets)
+
+        val liqSubs = symbols.map {
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.Liquidations, it)
+        }
+        bybitSubscriptions.addAll(liqSubs)
+
+        runBlocking {
+            wsClient.subscribe(liqSubs)
         }
     }
 

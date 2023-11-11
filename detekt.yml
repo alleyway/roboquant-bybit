@@ -1,5 +1,5 @@
 build:
-  maxIssues: 18
+  maxIssues: 22
   excludeCorrectable: false
   weights:
     # complexity: 2

@@ -161,10 +161,18 @@ class ByBitBroker(
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
 
-            // possibly launch an coroutine to return immediately
-            updateAccountFromAPI()
+//            GlobalScope.launch {
+//                launch(Dispatchers.IO) {
+                    // possibly launch an coroutine to return immediately
+                    try {
+                        updateAccountFromAPI()
+                        lastExpensiveSync = now
+                    } catch (e: Exception) {
+                        logger.error { "Caught exception trying to update account from API: \n ${e.stackTraceToString()}" }
+                    }
+//                }
+//            }
 
-            lastExpensiveSync = now
         }
     }
 

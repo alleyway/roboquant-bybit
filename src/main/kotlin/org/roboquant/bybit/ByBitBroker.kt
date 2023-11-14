@@ -870,6 +870,8 @@ class ByBitBroker(
                         _account.completeOrder(updateOrder, Instant.now())
                         _account.updateOrder(updateOrder.update, Instant.now(), OrderStatus.ACCEPTED)
 
+                        placedOrders[orderLinkId] = updateOrder.update.id // pretty sure i need this
+
                     } catch (e: CustomResponseException) {
                         logger.error { "Unable to amend order, server error: ${e.retMsg}" }
                         _account.rejectOrder(updateOrder, Instant.now())

@@ -31,8 +31,8 @@ class ByBitLiveFeed(
     private val logger = Logging.getLogger(ByBitLiveFeed::class)
     private val subscriptions = mutableMapOf<String, Asset>() //maps symbol to asset
     private val bybitSubscriptions: MutableList<ByBitWebSocketSubscription> = mutableListOf()
-    private var cachedAsks: MutableMap<Double, Double> = mutableMapOf()
-    private var cachedBids: MutableMap<Double, Double> = mutableMapOf()
+    private var cachedAsks: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
+    private var cachedBids: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
 
     private var recentTradeHistoryQueue: MutableList<Event> = mutableListOf()
 
@@ -109,7 +109,10 @@ class ByBitLiveFeed(
             is ByBitWebSocketMessage.TopicResponse.Orderbook -> {
 
                 val asset = getSubscribedAsset(message.data.symbol)
-                if (message.type == "snapshot") {
+
+                val u = message.data.updateId
+
+                if (message.type == "snapshot" || u == 1) {
                     cachedBids.clear()
                     cachedAsks.clear()
                 }
@@ -119,7 +122,7 @@ class ByBitLiveFeed(
                     if (it[1] == 0.0) {
                         cachedAsks.remove(it[0])
                     } else {
-                        cachedAsks[it[0]] = it[1]
+                        cachedAsks[it[0]] = Pair(it[1], u)
                     }
                 }
 
@@ -127,15 +130,32 @@ class ByBitLiveFeed(
                     if (it[1] == 0.0) {
                         cachedBids.remove(it[0])
                     } else {
-                        cachedBids[it[0]] = it[1]
+                        cachedBids[it[0]] = Pair(it[1], u)
+                    }
+                }
+
+                val nonZeroAsks = cachedAsks.entries.filter { it.value.first > 0 }.sortedBy { it.key }
+                val nonZeroBids = cachedBids.entries.filter { it.value.first > 0 }.sortedBy { it.key }
+
+                val bestBid = nonZeroBids.last()
+                val bestAsk = nonZeroAsks.first()
+
+                if (bestBid.key > bestAsk.key) {
+                    // one side or the other has an ask/bid out of sync
+                    logger.warn("invalid cached orderbook data detected")
+                    if (bestAsk.value.second < bestBid.value.second) {
+                        // looks like bestAsk is older sequence, so delete it
+                        cachedAsks.remove(bestAsk.key)
+                    } else {
+                        cachedBids.remove(bestBid.key)
                     }
                 }
 
                 val asks: List<OrderBook.OrderBookEntry> =
-                    cachedAsks.entries.map { OrderBook.OrderBookEntry(it.value, it.key) }
+                    cachedAsks.entries.map { OrderBook.OrderBookEntry(it.value.first, it.key) }
 
                 val bids: List<OrderBook.OrderBookEntry> =
-                    cachedBids.entries.map { OrderBook.OrderBookEntry(it.value, it.key) }
+                    cachedBids.entries.map { OrderBook.OrderBookEntry(it.value.first, it.key) }
 
                 val action = OrderBook(asset, asks, bids)
 
@@ -161,11 +181,13 @@ class ByBitLiveFeed(
             is ByBitWebSocketMessage.TopicResponse.Liquidation -> {
                 val liqItem = message.data
                 val asset = getSubscribedAsset(liqItem.symbol)
-                val action = Liquidation(asset,
+                val action = Liquidation(
+                    asset,
                     liqItem.price,
                     liqItem.side,
-                    liqItem.size  )
-                    send(Event(listOf(action), getTime(message.ts)))
+                    liqItem.size
+                )
+                send(Event(listOf(action), getTime(message.ts)))
             }
 
 //            is ByBitWebSocketMessage.TopicResponse.TickerSpot -> {
@@ -246,6 +268,7 @@ class ByBitLiveFeed(
                     id = "spot::"
                     Currency.USDT
                 }
+
                 ByBitEndpoint.Linear -> {
                     id = if (notFutures) {
                         "linearOrInverse::LinearPerpetual"
@@ -254,6 +277,7 @@ class ByBitLiveFeed(
                     }
                     Currency.USDT
                 }
+
                 ByBitEndpoint.Inverse -> {
                     id = if (notFutures) {
                         "linearOrInverse::InversePerpetual"
@@ -262,10 +286,12 @@ class ByBitLiveFeed(
                     }
                     Currency.BTC
                 }
+
                 ByBitEndpoint.Option -> {
                     id = "option::"
                     Currency.USD
                 }
+
                 else -> {
                     Currency.USD
                 }
@@ -308,8 +334,10 @@ class ByBitLiveFeed(
         }
     }
 
-    fun subscribeOrderBook(vararg symbols: String,
-                           level: ByBitWebsocketTopic.Orderbook = ByBitWebsocketTopic.Orderbook.Level_50) {
+    fun subscribeOrderBook(
+        vararg symbols: String,
+        level: ByBitWebsocketTopic.Orderbook = ByBitWebsocketTopic.Orderbook.Level_50
+    ) {
 
         val assets = symbolsToAssets(symbols)
 

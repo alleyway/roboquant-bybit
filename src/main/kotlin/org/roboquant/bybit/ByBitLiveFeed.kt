@@ -137,10 +137,10 @@ class ByBitLiveFeed(
                 val nonZeroAsks = cachedAsks.entries.filter { it.value.first > 0 }.sortedBy { it.key }
                 val nonZeroBids = cachedBids.entries.filter { it.value.first > 0 }.sortedBy { it.key }
 
-                val bestBid = nonZeroBids.last()
-                val bestAsk = nonZeroAsks.first()
+                val bestBid = nonZeroBids.lastOrNull()
+                val bestAsk = nonZeroAsks.firstOrNull()
 
-                if (bestBid.key > bestAsk.key) {
+                if (bestBid != null && bestAsk != null &&  bestBid.key > bestAsk.key) {
                     // one side or the other has an ask/bid out of sync
                     logger.warn("invalid cached orderbook data detected")
                     if (bestAsk.value.second < bestBid.value.second) {

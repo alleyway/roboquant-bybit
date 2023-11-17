@@ -58,8 +58,8 @@ class ByBitBroker(
     /**
      * @see Broker.account
      */
-    override val account: Account
-        get() = _account.toAccount()
+    override var account: Account
+        private set
 
     private val logger = Logging.getLogger(ByBitBroker::class)
     private val placedOrders = mutableMapOf<String, Int>()
@@ -131,7 +131,7 @@ class ByBitBroker(
             }
         }
 
-
+        account = _account.toAccount()
     }
 
     suspend fun fetchClosedPnLs(
@@ -152,7 +152,13 @@ class ByBitBroker(
 
     override fun sync(event: Event) {
         logger.debug { "Sync()" }
-        _account.updateMarketPrices(event)
+        try {
+            _account.updateMarketPrices(event)
+        } catch (e: NoSuchElementException) {
+            e.printStackTrace()
+            logger.warn { "Captured NoSuchElementException" }
+        }
+
         _account.lastUpdate = event.time
 
         accountModel.updateAccount(_account)
@@ -174,6 +180,9 @@ class ByBitBroker(
 //            }
 
         }
+
+        account = _account.toAccount()
+
     }
 
     private fun updateAccountFromAPI() {

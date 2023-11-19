@@ -169,13 +169,13 @@ class ByBitBroker(
 
 //            GlobalScope.launch {
 //                launch(Dispatchers.IO) {
-                    // possibly launch an coroutine to return immediately
-                    try {
-                        updateAccountFromAPI()
-                        lastExpensiveSync = now
-                    } catch (e: Exception) {
-                        logger.error { "Caught exception trying to update account from API: \n ${e.stackTraceToString()}" }
-                    }
+            // possibly launch an coroutine to return immediately
+            try {
+                updateAccountFromAPI()
+                lastExpensiveSync = now
+            } catch (e: Exception) {
+                logger.error { "Caught exception trying to update account from API: \n ${e.stackTraceToString()}" }
+            }
 //                }
 //            }
 
@@ -187,7 +187,7 @@ class ByBitBroker(
 
     private fun updateAccountFromAPI() {
 
-        // syncOrdersFromAPI()
+        syncOrdersFromAPI()
         syncAccountCashFromAPI()
 
 
@@ -202,7 +202,7 @@ class ByBitBroker(
 
                 val p = _account.portfolio
 
-                p.keys.forEach{ asset ->
+                p.keys.forEach { asset ->
                     if (serverPositions.none { it.symbol == asset.symbol }) {
                         logger.warn { "Had to remove Roboquant position that didn't exist on server: $asset" }
                         p.remove(asset)
@@ -441,35 +441,41 @@ class ByBitBroker(
      * There's a little issue where the response only returns max 50 in one call
      * Therefore if you have a lot of orders before consolidation they wouldn't
      * show up. Maybe in the future paginate orders and run in coroutine, but...slow.
+     *
+     /
+     *
      */
 
-//    private fun syncOrdersFromAPI() {
-//
-//        val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category))
-//
-//        if (ordersOpenResponse.retCode != 0) {
-//            logger.error { "Unable to syncOrdersFromAPI: " + ordersOpenResponse.retMsg }
-//        } else {
-//
-//            val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
-//
-//            placedOrders.entries.forEach {
-//                val orderState = _account.getOrderState(it.value)
-//
-//                if (orderState != null
-//                    && !openOrderLinkIds.contains(it.key)
-//                    && orderState.status != OrderStatus.INITIAL
-//                ) {
-//                    logger.warn(
-//                        "Rejecting order that existed in _account.openOrders, but was not found on server:\n "
-//                        + "${orderState.order} "
-//                    )
-//                    val now = Instant.now()
-//                    _account.updateOrder(orderState.order, now, OrderStatus.REJECTED)
-//                }
-//            }
-//        }
-//    }
+    private fun syncOrdersFromAPI() {
+
+        try {
+            val ordersOpenResponse = client.orderClient.ordersOpenBlocking(OrdersOpenParams(category, limit = 50))
+
+
+            if (ordersOpenResponse.result.list.size < 50) {
+                val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
+
+                placedOrders.entries.forEach {
+                    val orderState = _account.getOrderState(it.value)
+
+                    if (orderState != null
+                        && !openOrderLinkIds.contains(it.key)
+                        && orderState.status != OrderStatus.INITIAL
+                    ) {
+                        logger.warn(
+                            "Rejecting order that existed in _account.openOrders, but was not found on server:\n "
+                                    + "${orderState.order} "
+                        )
+                        val now = Instant.now()
+                        _account.updateOrder(orderState.order, now, OrderStatus.COMPLETED)
+                    }
+                }
+            }
+
+        } catch (error: CustomResponseException) {
+            logger.warn(error.message)
+        }
+    }
 
     private fun syncAccountCashFromAPI() {
 

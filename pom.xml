@@ -20,7 +20,7 @@
         <kotlin.compiler.incremental>false</kotlin.compiler.incremental>
         <kotlin.compiler.languageVersion>1.9</kotlin.compiler.languageVersion>
         <kotlin.experimental.tryK2>false</kotlin.experimental.tryK2>
-        <kotlin.version>1.9.20</kotlin.version>
+        <kotlin.version>1.9.21</kotlin.version>
         <slf4j.version>2.0.7</slf4j.version>
     </properties>
 

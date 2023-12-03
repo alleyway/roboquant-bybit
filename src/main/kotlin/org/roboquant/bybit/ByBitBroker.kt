@@ -116,7 +116,8 @@ class ByBitBroker(
         val subscriptions = listOf(
             ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Execution),
             ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Order),
-            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Wallet)
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Wallet),
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.PrivateTopic.Position)
         )
 
         val scope = CoroutineScope(Dispatchers.Default + Job())
@@ -233,7 +234,9 @@ class ByBitBroker(
                                         size = serverSize,
                                         avgPrice = serverPosition.avgPrice.toDouble(),
                                         mktPrice = serverPosition.markPrice.toDouble(),
-                                        lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong())
+                                        lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
+                                        leverage = serverPosition.leverage.toDouble(),
+                                        margin = serverPosition.positionBalance.toDouble()
                                     )
                                 )
                             }
@@ -413,7 +416,7 @@ class ByBitBroker(
                 message.data.forEach {
 
                     when (it.execType) {
-                        ExecType.Trade -> updateAccountWithExecution(it)
+                        ExecType.Trade -> executionUpdateFromWebsocket(it)
 
                         else -> {
                             logger.warn("execution type ${it.execType} not yet handled")
@@ -424,10 +427,36 @@ class ByBitBroker(
 
                 }
             }
-
+            is ByBitWebSocketMessage.PrivateTopicResponse.Position -> {
+                message.data.forEach {
+                    positionUpdateFromWebsocket(it)
+                }
+            }
             else -> logger.warn("received message=$message")
         }
 
+    }
+
+    private fun positionUpdateFromWebsocket(positionItem: ByBitWebSocketMessage.PositionItem) {
+
+        val asset = assetMap[positionItem.symbol]
+
+        if (asset == null) {
+            logger.warn { "Found serverPosition with symbol not in assetMap" }
+        } else {
+            //val currentPos = _account.portfolio.getOrDefault(asset, Position.empty(asset))
+            _account.setPosition(
+                Position(
+                    asset,
+                    size = Size(positionItem.size.toDouble()),
+                    avgPrice = positionItem.entryPrice.toDouble(),
+                    mktPrice = positionItem.markPrice.toDouble(),
+                    lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
+                    leverage = positionItem.leverage.toDouble(),
+                    margin = positionItem.positionBalance.toDouble()
+                )
+            )
+        }
     }
 
     /**
@@ -510,7 +539,7 @@ class ByBitBroker(
         return currentPos.realizedPNL(position)
     }
 
-    private fun updateAccountWithExecution(execution: ByBitWebSocketMessage.ExecutionItem) {
+    private fun executionUpdateFromWebsocket(execution: ByBitWebSocketMessage.ExecutionItem) {
 
         val asset = assetMap[execution.symbol]
 

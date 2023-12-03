@@ -445,10 +445,14 @@ class ByBitBroker(
             logger.warn { "Found serverPosition with symbol not in assetMap" }
         } else {
             //val currentPos = _account.portfolio.getOrDefault(asset, Position.empty(asset))
+
+            val sign = if (positionItem.side == Side.Sell) -1 else 1
+            val serverSize = Size(positionItem.size.toDouble().times(sign))
+
             _account.setPosition(
                 Position(
                     asset,
-                    size = Size(positionItem.size.toDouble()),
+                    size = serverSize,
                     avgPrice = positionItem.entryPrice.toDouble(),
                     mktPrice = positionItem.markPrice.toDouble(),
                     lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),

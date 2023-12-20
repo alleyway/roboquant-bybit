@@ -42,7 +42,8 @@ class ByBitLiveFeed(
             endpoint,
             config.apiKey,
             config.secret,
-            config.testnet
+            config.testnet,
+            name = "ByBitLiveFeed"
         )
 
         client = getRestClient(config)
@@ -60,7 +61,7 @@ class ByBitLiveFeed(
         }
 
         runBlocking {
-            delay(3000)
+            delay(1000)
         }
     }
 

@@ -86,7 +86,8 @@ class ByBitBroker(
             ByBitEndpoint.Private,
             config.apiKey,
             config.secret,
-            config.testnet
+            config.testnet,
+            name = "ByBitBroker"
         )
         wsClient = ByBit.getWebSocketClient(wsOptions)
         assetMap = ByBit.availableAssets(client, category)

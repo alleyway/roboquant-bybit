@@ -33,6 +33,7 @@ import java.math.RoundingMode
 import java.time.Duration
 import java.time.Instant
 import java.util.*
+import kotlin.time.measureTime
 
 
 /**
@@ -142,15 +143,9 @@ class ByBitBroker(
         startTime: Long? = null,
         endTime: Long? = null,
         limit: Int = 50
-    ): List<ClosedPnLResponseItem>? {
+    ): List<ClosedPnLResponseItem> {
         val resp = client.positionClient.closedPnLs(ClosedPnLParams(category, symbol, startTime, endTime, limit))
-
-        return if (resp.retCode == 0) {
-            resp.result.list
-        } else {
-            logger.error { "unable to fetch closed PnLs: " + resp.retMsg }
-            null
-        }
+        return resp.result.list
     }
 
     override fun sync(event: Event) {
@@ -169,7 +164,10 @@ class ByBitBroker(
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
-
+            val initialOrderIds = _account.orders.filter { it.status == OrderStatus.INITIAL }.map { it.orderId }
+            if (initialOrderIds.isNotEmpty()) {
+                logger.info { "orderIds of status INITIAL: [${initialOrderIds.joinToString { " , " }}]" }
+            }
 //            GlobalScope.launch {
 //                launch(Dispatchers.IO) {
             // possibly launch an coroutine to return immediately
@@ -704,11 +702,11 @@ class ByBitBroker(
             return
         }
 
-        rateLimiter.executeRunnable {
+        rateLimiter.executeFunction {
             try {
                 val order = cancellation.order
 
-                val response = client.orderClient.cancelOrderBlocking(
+                client.orderClient.cancelOrderBlocking(
                     CancelOrderParams(
                         category,
                         symbol = order.asset.symbol,
@@ -716,12 +714,8 @@ class ByBitBroker(
                     )
                 )
 
-                if (response.retCode != 0) {
-                    logger.warn { "NonZero retCode cancelling Order: " + response.retMsg }
-                    _account.rejectOrder(order, Instant.now())
-                } else {
-                    _account.completeOrder(order, Instant.now())
-                }
+                _account.completeOrder(order, Instant.now())
+
 
             } catch (e: CustomResponseException) {
                 if (e.retCode == 110001) { // order does not exist
@@ -745,39 +739,36 @@ class ByBitBroker(
 
     private fun cancelAllOrders(cancelOrders: List<CancelOrder>) {
         logger.debug { "Running cancelAllOrders()" }
-        rateLimiter.executeRunnable {
+        rateLimiter.executeFunction {
             try {
                 val response = client.orderClient.cancelAllOrdersBlocking(
                     CancelAllOrdersParams(category, symbol = cancelOrders[0].asset.symbol)
                 )
-                if (response.retCode != 0) {
-                    logger.warn { "NonZero retCode cancelling All Orders: " + response.retMsg }
-                } else {
-                    when (response) {
-                        is CancelAllOrdersResponse.CancelAllOrdersResponseOther -> {
-                            response.result.list.forEach { item ->
-                                val id = placedOrders[item.orderLinkId]
-                                id?.let {
-                                    _account.getOrder(id)?.let {
-                                        _account.updateOrder(it, Instant.now(), OrderStatus.CANCELLED)
-                                    }
-                                    cancelOrders.firstOrNull { it.order.id == id }?.let { cancelOrder ->
-                                        _account.updateOrder(cancelOrder, Instant.now(), OrderStatus.COMPLETED)
-                                    }
+
+                when (response) {
+                    is CancelAllOrdersResponse.CancelAllOrdersResponseOther -> {
+                        response.result.list.forEach { item ->
+                            val id = placedOrders[item.orderLinkId]
+                            id?.let {
+                                _account.getOrder(id)?.let {
+                                    _account.updateOrder(it, Instant.now(), OrderStatus.CANCELLED)
+                                }
+                                cancelOrders.firstOrNull { it.order.id == id }?.let { cancelOrder ->
+                                    _account.updateOrder(cancelOrder, Instant.now(), OrderStatus.COMPLETED)
                                 }
                             }
                         }
-
-                        is CancelAllOrdersResponse.CancelAllOrdersResponseSpot -> {
-                            logger.warn { "Unfortunately bybit doesn't return orderLinkIds for SPOT!" }
-                        }
-
-                        else -> {
-                            logger.error { "Unknown response type when cancelling all orders: ${response}" }
-                        }
                     }
 
+                    is CancelAllOrdersResponse.CancelAllOrdersResponseSpot -> {
+                        logger.warn { "Unfortunately bybit doesn't return orderLinkIds for SPOT!" }
+                    }
+
+                    else -> {
+                        logger.error { "Unknown response type when cancelling all orders: ${response}" }
+                    }
                 }
+
             } catch (e: CustomResponseException) {
                 logger.error(e.message)
             } catch (e: Exception) {
@@ -961,63 +952,69 @@ class ByBitBroker(
                 }
                 val updateOrderId = updateOrder.id
 
+
+
                 rateLimiter.executeFunction {
+                    val timeSpent = measureTime {
+                        val accountOrder = _account.getOrder(updateOrderId) as UpdateOrder?
 
-                    val accountOrder = _account.getOrder(updateOrderId) as UpdateOrder?
+                        if (accountOrder !== null) {
 
-                    if (accountOrder !== null) {
+                            if (_account.getOrder(accountOrder.order.id) == null) {
+                                logger.warn("Rejecting amend for order that is no longer open")
+                                _account.rejectOrder(accountOrder, Instant.now())
+                                return@executeFunction
+                            }
 
-                        if (_account.getOrder(accountOrder.order.id) == null) {
-                            logger.warn("Rejecting amend for order that is no longer open")
-                            _account.rejectOrder(accountOrder, Instant.now())
-                            return@executeFunction
-                        }
-
-                        try {
-                            client.orderClient.amendOrderBlocking(
-                                AmendOrderParams(
-                                    category,
-                                    symbol,
-                                    orderLinkId = orderLinkId,
-                                    qty = qty,
-                                    price = price
+                            try {
+                                client.orderClient.amendOrderBlocking(
+                                    AmendOrderParams(
+                                        category,
+                                        symbol,
+                                        orderLinkId = orderLinkId,
+                                        qty = qty,
+                                        price = price
+                                    )
                                 )
-                            )
 
-                            val now = Instant.now()
-                            _account.completeOrder(accountOrder, now)
-                            _account.updateOrder(updateOrder.update, now, OrderStatus.ACCEPTED)
+                                val now = Instant.now()
+                                _account.completeOrder(accountOrder, now)
+                                _account.updateOrder(updateOrder.update, now, OrderStatus.ACCEPTED)
 
-                            logger.debug {
-                                "Server accepts amend ${TextColors.yellow(accountOrder.toString())} ${
-                                    TextColors.gray(
-                                        orderLinkId
-                                    )
-                                }"
+                                logger.debug {
+                                    "Server accepts amend ${TextColors.yellow(accountOrder.toString())} ${
+                                        TextColors.gray(
+                                            orderLinkId
+                                        )
+                                    }"
+                                }
+                                //placedOrders[orderLinkId] = updateOrder.update.id // turns out this isn't needed, same id
+
+                            } catch (e: CustomResponseException) {
+                                logger.warn {
+                                    "Failed (${TextColors.red(e.message)}) amending order: ${
+                                        TextColors.yellow(
+                                            accountOrder.toString()
+                                        )
+                                    }"
+                                }
+
+                                val now = Instant.now()
+                                _account.rejectOrder(accountOrder, now)
+                                if (e.retCode == 110001 && _account.getOrder(accountOrder.order.id) !== null) { // order does not exist on server
+                                    logger.warn("Completing order that was to be amended b/c did not exist on server")
+                                    _account.completeOrder(accountOrder.order, now)
+                                }
+                            } catch (e: Exception) {
+                                _account.rejectOrder(accountOrder, Instant.now())
+                                logger.error(e.message)
                             }
-                            //placedOrders[orderLinkId] = updateOrder.update.id // turns out this isn't needed, same id
-
-                        } catch (e: CustomResponseException) {
-                            logger.warn {
-                                "Failed (${TextColors.red(e.message)}) amending order: ${
-                                    TextColors.yellow(
-                                        accountOrder.toString()
-                                    )
-                                }"
-                            }
-
-                            val now = Instant.now()
-                            _account.rejectOrder(accountOrder, now)
-                            if (e.retCode == 110001 && _account.getOrder(accountOrder.order.id) !== null) { // order does not exist on server
-                                logger.warn("Completing order that was to be amended b/c did not exist on server")
-                                _account.completeOrder(accountOrder.order, now)
-                            }
-                        } catch (e: Exception) {
-                            logger.error(e.message)
+                        } else {
+                            logger.warn("rateLimited trade(): _account.getOrder($updateOrderId) == null")
                         }
-                    } else {
-                        logger.warn("rateLimited trade(): _account.getOrder($updateOrderId) == null")
                     }
+
+                    logger.info("Spent ${TextColors.magenta(timeSpent.toString())} amending order")
                 }
             }
 

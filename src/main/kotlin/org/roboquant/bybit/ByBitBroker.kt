@@ -154,7 +154,8 @@ class ByBitBroker(
         try {
             _account.updateMarketPrices(event)
         } catch (e: NoSuchElementException) {
-            e.printStackTrace()
+            // sometimes on startup we have trouble b/c the orderbook isn't built yet
+            //e.printStackTrace()
             logger.warn { "Captured NoSuchElementException" }
         }
 

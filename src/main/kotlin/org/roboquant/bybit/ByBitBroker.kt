@@ -53,10 +53,11 @@ class ByBitBroker(
 
     private val client: ByBitRestClient
     private val wsClient: ByBitWebSocketClient
-    private val _account = InternalAccount(baseCurrency)
+    private val _account = InternalAccount(baseCurrency, 1.days)
     private val config = ByBitConfig()
     private val accountModel: AccountModel
 
+    private val prevInitialOrderIds = mutableListOf<Int>()
     /**
      * @see Broker.account
      */
@@ -160,13 +161,19 @@ class ByBitBroker(
         _account.lastUpdate = event.time
 
         accountModel.updateAccount(_account)
+        account = _account.toAccount()
 
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
         if (period.seconds > 60) {
-            val initialOrderIds = _account.orders.filter { it.status == OrderStatus.INITIAL }.map { it.orderId }
-            if (initialOrderIds.isNotEmpty()) {
-                logger.info { "orderIds of status INITIAL: [${initialOrderIds.joinToString { " , " }}]" }
+            val initialOrderIds = account.openOrders.filter { it.status == OrderStatus.INITIAL }.map { it.orderId }.toSet()
+            if (initialOrderIds.isNotEmpty() && prevInitialOrderIds.isNotEmpty()) {
+                prevInitialOrderIds.intersect(initialOrderIds).toList().forEach {
+                    val stuckOrder = account.openOrders[it]
+                    logger.warn { "rejecting account order of stuck at status INITIAL: [$stuckOrder]" }
+                    _account.rejectOrder(stuckOrder.order, Instant.now())
+                    prevInitialOrderIds.remove(it)
+                }
             }
 //            GlobalScope.launch {
 //                launch(Dispatchers.IO) {
@@ -182,7 +189,7 @@ class ByBitBroker(
 
         }
 
-        account = _account.toAccount()
+
 
     }
 

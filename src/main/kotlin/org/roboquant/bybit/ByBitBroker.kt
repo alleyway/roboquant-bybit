@@ -5,6 +5,7 @@ package org.roboquant.bybit
 import bybit.sdk.CustomResponseException
 import bybit.sdk.rest.ByBitRestClient
 import bybit.sdk.rest.account.WalletBalanceParams
+import bybit.sdk.rest.asset.CreateUniversalTransferParams
 import bybit.sdk.rest.order.*
 import bybit.sdk.rest.position.ClosedPnLParams
 import bybit.sdk.rest.position.ClosedPnLResponseItem
@@ -56,7 +57,7 @@ class ByBitBroker(
     private val config = ByBitConfig()
     private val accountModel: AccountModel
 
-    private val prevInitialOrderIds = mutableListOf<Int>()
+    private val prevInitialOrderIds = mutableSetOf<Int>()
     /**
      * @see Broker.account
      */
@@ -148,6 +149,28 @@ class ByBitBroker(
         return resp.result.list
     }
 
+    fun transferCoin(
+        coin: String,
+        amount: String,
+        fromMemberId: String,
+        toMemberId: String,
+        fromAccountType: AccountType,
+        toAccountType: AccountType
+    ): String {
+        val resp = client.assetClient.createUniversalTransferBlocking(
+            CreateUniversalTransferParams(
+                UUID.randomUUID().toString(),
+                coin,
+                amount,
+                fromMemberId,
+                toMemberId,
+                fromAccountType,
+                toAccountType
+                )
+        )
+        return resp.result.transferId
+    }
+
     override fun sync(event: Event) {
         logger.trace { "Sync()" }
         try {
@@ -168,13 +191,14 @@ class ByBitBroker(
         if (period.seconds > 60) {
             val initialOrderIds = account.openOrders.filter { it.status == OrderStatus.INITIAL }.map { it.orderId }.toSet()
             if (initialOrderIds.isNotEmpty() && prevInitialOrderIds.isNotEmpty()) {
-                prevInitialOrderIds.intersect(initialOrderIds).toList().forEach {
+                prevInitialOrderIds.intersect(initialOrderIds).forEach {
                     val stuckOrder = account.openOrders[it]
                     logger.warn { "rejecting account order of stuck at status INITIAL: [$stuckOrder]" }
                     _account.rejectOrder(stuckOrder.order, Instant.now())
                     prevInitialOrderIds.remove(it)
                 }
             }
+            prevInitialOrderIds.addAll(initialOrderIds)
 //            GlobalScope.launch {
 //                launch(Dispatchers.IO) {
             // possibly launch an coroutine to return immediately
@@ -721,7 +745,7 @@ class ByBitBroker(
                     )
                 )
 
-                _account.completeOrder(order, Instant.now())
+                _account.completeOrder(cancellation, Instant.now())
 
 
             } catch (e: CustomResponseException) {

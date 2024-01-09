@@ -9,7 +9,6 @@ import bybit.sdk.rest.order.*
 import bybit.sdk.rest.position.ClosedPnLParams
 import bybit.sdk.rest.position.ClosedPnLResponseItem
 import bybit.sdk.rest.position.PositionInfoParams
-import bybit.sdk.rest.position.closedPnLs
 import bybit.sdk.shared.*
 import bybit.sdk.shared.TimeInForce
 import bybit.sdk.websocket.*
@@ -139,13 +138,13 @@ class ByBitBroker(
         account = _account.toAccount()
     }
 
-    suspend fun fetchClosedPnLs(
+    fun fetchClosedPnLs(
         symbol: String? = null,
         startTime: Long? = null,
         endTime: Long? = null,
         limit: Int = 50
     ): List<ClosedPnLResponseItem> {
-        val resp = client.positionClient.closedPnLs(ClosedPnLParams(category, symbol, startTime, endTime, limit))
+        val resp = client.positionClient.closedPnLsBlocking(ClosedPnLParams(category, symbol, startTime, endTime, limit))
         return resp.result.list
     }
 

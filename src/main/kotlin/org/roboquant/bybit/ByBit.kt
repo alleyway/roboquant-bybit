@@ -19,8 +19,7 @@ import org.roboquant.common.*
 data class ByBitConfig(
     var apiKey: String = Config.getProperty("bybit.apikey", ""),
     var secret: String = Config.getProperty("bybit.secret", ""),
-    var testnet: Boolean = Config.getProperty("bybit.testnet", "true") == "true",
-    var leverage: Double = Config.getProperty("bybit.leverage", "1.0").toDouble()
+    var testnet: Boolean = Config.getProperty("bybit.testnet", "true") == "true"
 )
 
 /**

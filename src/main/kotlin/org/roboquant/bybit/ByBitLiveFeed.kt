@@ -34,6 +34,8 @@ class ByBitLiveFeed(
     private var cachedAsks: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
     private var cachedBids: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
 
+    private val cachedLinearInverseItems = mutableMapOf<Asset, ByBitWebSocketMessage.TickerLinearInverseItem>()
+
     private var recentTradeHistoryQueue: MutableList<Event> = mutableListOf()
 
     init {
@@ -141,7 +143,7 @@ class ByBitLiveFeed(
                 val bestBid = nonZeroBids.lastOrNull()
                 val bestAsk = nonZeroAsks.firstOrNull()
 
-                if (bestBid != null && bestAsk != null &&  bestBid.key > bestAsk.key) {
+                if (bestBid != null && bestAsk != null && bestBid.key > bestAsk.key) {
                     // one side or the other has an ask/bid out of sync
                     logger.warn("invalid cached orderbook data detected")
                     if (bestAsk.value.second < bestBid.value.second) {
@@ -158,24 +160,56 @@ class ByBitLiveFeed(
                 val bids: List<OrderBook.OrderBookEntry> =
                     cachedBids.entries.map { OrderBook.OrderBookEntry(it.value.first, it.key) }
 
-                val action = OrderBook(asset, asks, bids)
-
-                send(Event(listOf(action), getTime(message.ts)))
+                if (asks.isNotEmpty() && bids.isNotEmpty()) {
+                    val action = OrderBook(asset, asks, bids)
+                    send(Event(listOf(action), getTime(message.ts)))
+                }
             }
 
             is ByBitWebSocketMessage.TopicResponse.TickerLinearInverse -> {
-                if (message.type == "snapshot") {
-                    val asset = getSubscribedAsset(message.data.symbol)
-                    val action = PriceQuote(
-                        asset,
-                        message.data.ask1Price!!,
-                        message.data.ask1Size ?: Double.NaN,
-                        message.data.bid1Price!!,
-                        message.data.bid1Size ?: Double.NaN,
+                val asset = getSubscribedAsset(message.data.symbol)
+
+                if (message.type == "snapshot"
+                    && cachedLinearInverseItems[asset] !== null
+                ) {
+                    cachedLinearInverseItems.remove(asset)
+                }
+
+                val cached = cachedLinearInverseItems[asset] ?: message.data
+
+                message.data.let {
+                    val newCached = ByBitWebSocketMessage.TickerLinearInverseItem(
+                        cached.symbol,
+                        price24hPcnt = it.price24hPcnt ?: cached.price24hPcnt,
+                        fundingRate = it.fundingRate ?: cached.fundingRate,
+                        markPrice = it.markPrice ?: cached.markPrice,
+                        indexPrice = it.indexPrice ?: cached.indexPrice,
+                        openInterestValue = it.openInterestValue ?: cached.openInterestValue,
+                        bid1Price = it.bid1Price ?: cached.bid1Price,
+                        bid1Size = it.bid1Size ?: cached.bid1Size,
+                        ask1Price = it.ask1Price ?: cached.ask1Price,
+                        ask1Size = it.ask1Size ?: cached.ask1Size,
+                    )
+                    cachedLinearInverseItems[asset] = newCached
+                }
+
+                val c = cachedLinearInverseItems[asset]!!
+
+                if (
+                    c.ask1Price !== null &&
+                    c.ask1Size !== null &&
+                    c.bid1Price !== null &&
+                    c.bid1Size !== null &&
+                    c.markPrice !== null
+                ) {
+                    val action = PriceQuoteByBitLinearInverse(asset,
+                        askPrice = c.ask1Price!!,
+                        askSize = c.ask1Size!!,
+                        bidPrice = c.bid1Price!!,
+                        bidSize = c.bid1Size!!,
+                        markPrice = c.markPrice!!
                     )
                     send(Event(listOf(action), getTime(message.ts)))
-                } else {
-                    logger.warn { "non-snapshot received for TickerLinearInverse" }
                 }
             }
 
@@ -367,6 +401,22 @@ class ByBitLiveFeed(
 
         runBlocking {
             wsClient.subscribe(liqSubs)
+        }
+    }
+
+    fun subscribeTickers(vararg symbols: String) {
+
+        val assets = symbolsToAssets(symbols)
+
+        subscriptions.putAll(assets)
+
+        val tickSubs = symbols.map {
+            ByBitWebSocketSubscription(ByBitWebsocketTopic.Tickers, it)
+        }
+        bybitSubscriptions.addAll(tickSubs)
+
+        runBlocking {
+            wsClient.subscribe(tickSubs)
         }
     }
 

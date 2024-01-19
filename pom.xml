@@ -118,6 +118,11 @@
     </build>
 
     <dependencies>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-core</artifactId>
+            <version>1.7.3</version>
+        </dependency>
 
         <dependency>
             <artifactId>roboquant</artifactId>
@@ -127,7 +132,7 @@
         <dependency>
             <groupId>io.github.alleyway</groupId>
             <artifactId>bybit-kotlin-api</artifactId>
-            <version>0.5.1-SNAPSHOT</version>
+            <version>0.6.0-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>com.github.ajalt.mordant</groupId>
@@ -162,18 +167,6 @@
             <artifactId>ktor-client-core-jvm</artifactId>
             <version>${ktor_version}</version>
         </dependency>
-
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-kotlin</artifactId>
-            <version>2.2.0</version>
-        </dependency>
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-ratelimiter</artifactId>
-            <version>2.2.0</version>
-        </dependency>
-
     </dependencies>
 
 </project>

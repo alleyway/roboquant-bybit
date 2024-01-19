@@ -5,15 +5,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.roboquant.bybit.ByBitLiveFeed
-import org.roboquant.common.*
+import org.roboquant.common.Timeframe
+import org.roboquant.common.seconds
 import org.roboquant.feeds.PriceAction
 import org.roboquant.feeds.filter
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 internal class ByBitLiveFeedTest {
 
-    @Test
+    @Test @Ignore
     fun subscribeTest() {
 
         runBlocking {

@@ -31,8 +31,8 @@ class ByBitLiveFeed(
     private val logger = Logging.getLogger(ByBitLiveFeed::class)
     private val subscriptions = mutableMapOf<String, Asset>() //maps symbol to asset
     private val bybitSubscriptions: MutableList<ByBitWebSocketSubscription> = mutableListOf()
-    private var cachedAsks: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
-    private var cachedBids: MutableMap<Double, Pair<Double, Int>> = mutableMapOf()
+
+    private val orderBookParser =  ByBitOrderBookParser()
 
     private val cachedLinearInverseItems = mutableMapOf<Asset, ByBitWebSocketMessage.TickerLinearInverseItem>()
 
@@ -113,56 +113,10 @@ class ByBitLiveFeed(
 
                 val asset = getSubscribedAsset(message.data.symbol)
 
-                val u = message.data.updateId
+                val orderBook: OrderBook = orderBookParser.parse(asset, message)
 
-                if (message.type == "snapshot" || u == 1) {
-                    cachedBids.clear()
-                    cachedAsks.clear()
-                }
-
-                message.data.asks.forEach {
-                    // 0 = price, 1 = volume
-                    if (it[1] == 0.0) {
-                        cachedAsks.remove(it[0])
-                    } else {
-                        cachedAsks[it[0]] = Pair(it[1], u)
-                    }
-                }
-
-                message.data.bids.forEach {
-                    if (it[1] == 0.0) {
-                        cachedBids.remove(it[0])
-                    } else {
-                        cachedBids[it[0]] = Pair(it[1], u)
-                    }
-                }
-
-                val nonZeroAsks = cachedAsks.entries.filter { it.value.first > 0 }.sortedBy { it.key }
-                val nonZeroBids = cachedBids.entries.filter { it.value.first > 0 }.sortedBy { it.key }
-
-                val bestBid = nonZeroBids.lastOrNull()
-                val bestAsk = nonZeroAsks.firstOrNull()
-
-                if (bestBid != null && bestAsk != null && bestBid.key > bestAsk.key) {
-                    // one side or the other has an ask/bid out of sync
-                    logger.warn("invalid cached orderbook data detected")
-                    if (bestAsk.value.second < bestBid.value.second) {
-                        // looks like bestAsk is older sequence, so delete it
-                        cachedAsks.remove(bestAsk.key)
-                    } else {
-                        cachedBids.remove(bestBid.key)
-                    }
-                }
-
-                val asks: List<OrderBook.OrderBookEntry> =
-                    cachedAsks.entries.map { OrderBook.OrderBookEntry(it.value.first, it.key) }
-
-                val bids: List<OrderBook.OrderBookEntry> =
-                    cachedBids.entries.map { OrderBook.OrderBookEntry(it.value.first, it.key) }
-
-                if (asks.isNotEmpty() && bids.isNotEmpty()) {
-                    val action = OrderBook(asset, asks, bids)
-                    send(Event(listOf(action), getTime(message.ts)))
+                if (orderBook.asks.isNotEmpty() && orderBook.bids.isNotEmpty()) {
+                    send(Event(listOf(orderBook), getTime(message.ts)))
                 }
             }
 

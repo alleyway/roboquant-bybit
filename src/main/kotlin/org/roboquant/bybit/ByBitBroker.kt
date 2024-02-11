@@ -751,6 +751,8 @@ class ByBitBroker(
      */
     private fun cancelOrder(cancellation: CancelOrder) {
         val orderLinkId = placedOrders.entries.find { it.value == cancellation.order.id }?.key
+        logger.debug("Cancelling $orderLinkId")
+
         if (orderLinkId == null) {
             logger.error("Unable to find order.id in placedOrders: ${cancellation.order.id}")
             return
@@ -769,6 +771,8 @@ class ByBitBroker(
                     )
                 )
                 _account.completeOrder(cancellation, Instant.now())
+//                _account.updateOrder(cancellation.order, Instant.now(), OrderStatus.CANCELLED) // handled by WS
+
             } catch (e: CustomResponseException) {
                 logger.warn {
                     "Failed (${TextColors.red(e.message)}) cancelling order: ${

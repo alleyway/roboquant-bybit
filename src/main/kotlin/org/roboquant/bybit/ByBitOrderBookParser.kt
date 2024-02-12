@@ -5,6 +5,9 @@ import org.roboquant.common.Asset
 import org.roboquant.common.Logging
 import org.roboquant.feeds.OrderBook
 
+
+// TODO: need to update this to handle multiple assets!
+
 class ByBitOrderBookParser {
 
     private val logger = Logging.getLogger(this::class)

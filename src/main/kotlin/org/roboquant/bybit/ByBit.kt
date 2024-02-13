@@ -90,7 +90,7 @@ internal object ByBit {
             limit = 1000,
         )
 
-        client.marketClient.listSupportedInstruments(params).asSequence().forEach {
+        client.marketClient.listSupportedInstruments(params).asStream().forEach {
             val asset = it.toAsset()
             assets.addNotNull(asset)
         }

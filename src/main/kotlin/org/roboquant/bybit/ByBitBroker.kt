@@ -144,7 +144,7 @@ class ByBitBroker(
     ): List<ClosedPnLResponseItem> {
         val resp = client.positionClient
             .closedPnLsPaginated(ClosedPnLParams(category, symbol, startTime, endTime, limit))
-            .asSequence().toList()
+            .asStream().toList()
         return resp
     }
 

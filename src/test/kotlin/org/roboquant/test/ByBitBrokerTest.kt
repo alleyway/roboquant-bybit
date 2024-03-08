@@ -4,10 +4,7 @@ import bybit.sdk.shared.Category
 import kotlinx.coroutines.launch
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.roboquant.bybit.ByBitBroker
-import org.roboquant.common.Asset
-import org.roboquant.common.Currency
-import org.roboquant.common.ParallelJobs
-import org.roboquant.common.Size
+import org.roboquant.common.*
 import org.roboquant.orders.CancelOrder
 import org.roboquant.orders.LimitOrder
 import org.roboquant.orders.MarketOrder
@@ -19,7 +16,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 internal class ByBitBrokerTest {
-    private val asset = Asset.BITCOIN_INVERSE_PERP
+    private val asset = Asset(
+        "BTCUSD",
+        AssetType.CRYPTO,
+        Currency.BTC,
+        exchange = Exchange.CRYPTO,
+        id = "linearOrInverse::InversePerpetual"
+    )
 
     @Test @Ignore
     fun rateLimitTest() {

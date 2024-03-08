@@ -273,7 +273,7 @@ class ByBitLiveFeed(
                     } else {
                         "linearOrInverse::InverseFutures"
                     }
-                    Currency.BTC
+                    Currency.getInstance(it.replace("USD", ""))
                 }
 
                 ByBitEndpoint.Option -> {

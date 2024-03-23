@@ -36,8 +36,7 @@ import java.math.RoundingMode
 import java.time.Duration
 import java.time.Instant
 import java.util.*
-import kotlin.time.DurationUnit
-import kotlin.time.measureTime
+import kotlin.system.measureTimeMillis
 
 
 /**
@@ -1063,7 +1062,7 @@ class ByBitBroker(
                         logger.warn("Rejecting amend for order that is no longer open")
                         _account.rejectOrder(updateAOrder, Instant.now())
                     }
-                    val timeSpent = measureTime {
+                    val timeSpent = measureTimeMillis {
 
                         try {
                             client.orderClient.amendOrderBlocking(
@@ -1134,10 +1133,7 @@ class ByBitBroker(
                     logger.info(
                         "Spent ${
                             TextColors.brightBlue(
-                                timeSpent.toString(
-                                    DurationUnit.MILLISECONDS,
-                                    2
-                                )
+                                timeSpent.toString()
                             )
                         } amending order"
                     )

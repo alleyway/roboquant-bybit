@@ -1082,9 +1082,7 @@ class ByBitBroker(
                             )
 
                             val now = Instant.now()
-                            logger.debug("_account.updateOrder : ${cyan(updateAOrder.update.toString())}")
                             _account.updateOrder(updateAOrder.update, now, OrderStatus.ACCEPTED)
-                            logger.debug("_account.completeOrder : ${magenta(updateAOrder.toString())}")
                             _account.completeOrder(updateAOrder, now)
 
                             logger.debug {

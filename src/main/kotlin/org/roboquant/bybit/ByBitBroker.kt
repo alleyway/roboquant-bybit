@@ -14,7 +14,8 @@ import bybit.sdk.rest.position.PositionInfoParams
 import bybit.sdk.shared.*
 import bybit.sdk.shared.TimeInForce
 import bybit.sdk.websocket.*
-import com.github.ajalt.mordant.rendering.TextColors
+import com.github.ajalt.mordant.rendering.TextColors.*
+import com.github.ajalt.mordant.rendering.TextStyles.dim
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -348,8 +349,13 @@ class ByBitBroker(
                                 }
 
                                 else -> {
+                                    // because the websocket can have a delay, it's better to just
+                                    // be updating the order in the create/amend of the REST API call
+                                    // A bug was occurring where this delayed update was overwriting
+                                    // the most recent update from REST.
+
                                     // logger.info("WS: bybit.OrderStatus.New -> roboquant.OrderStatus.ACCEPTED")
-                                    _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
+                                   // _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
                                 }
                             }
                         }
@@ -370,8 +376,8 @@ class ByBitBroker(
                         bybit.sdk.shared.OrderStatus.PartiallyFilledCanceled
                         -> {
                             logger.debug {
-                                TextColors.brightBlue(
-                                    "WS: cancelled accountOrder (${accountOrder.id}): ${TextColors.yellow(order.rejectReason)} " + TextColors.gray(
+                                brightBlue(
+                                    "WS: cancelled accountOrder (${accountOrder.id}): ${yellow(order.rejectReason)} " + gray(
                                         order.orderLinkId
                                     )
                                 )
@@ -397,7 +403,7 @@ class ByBitBroker(
                         else -> {
                             // NOTE: an amended order will show up here with OrderStatus "New"
                             logger.debug(
-                                "WS update ( price: ${(accountOrder as LimitOrder).limit} ) with orderLinkId: " + TextColors.gray(
+                                "WS update ( price: ${(accountOrder as LimitOrder).limit} ) with orderLinkId: " + gray(
                                     order.orderLinkId
                                 )
                             )
@@ -461,7 +467,7 @@ class ByBitBroker(
                                 logger.debug(
                                     "      Server Wallet:  ${serverWallet.toPlainString()}\n" +
                                             "      ByBitBrkr Pos:  ${positionSize.toPlainString()}\n" +
-                                            "         Difference: ${TextColors.yellow((serverWallet - positionSize).toPlainString())}"
+                                            "         Difference: ${yellow((serverWallet - positionSize).toPlainString())}"
                                 )
                             }
                         }
@@ -643,9 +649,9 @@ class ByBitBroker(
 
         logger.info(
             "WS: Executed ${execution.orderType} ${execution.side} "
-                    + TextColors.cyan(execSize.toString())
-                    + " @ ${TextColors.brightBlue(execPrice.toString())} "
-                    + TextColors.gray(execution.orderLinkId)
+                    + cyan(execSize.toString())
+                    + " @ ${brightBlue(execPrice.toString())} "
+                    + gray(execution.orderLinkId)
         )
 
         if (rqOrderId !== null && execution.leavesQty == "0") {
@@ -774,8 +780,8 @@ class ByBitBroker(
 
             } catch (e: CustomResponseException) {
                 logger.warn {
-                    "Failed (${TextColors.red(e.message)}) cancelling order: ${
-                        TextColors.yellow(
+                    "Failed (${red(e.message)}) cancelling order: ${
+                        yellow(
                             accountOrder.toString()
                         )
                     }"
@@ -898,16 +904,16 @@ class ByBitBroker(
                 _account.acceptOrder(accountOrder, Instant.now())
 
                 logger.debug {
-                    "Server accepts create ${TextColors.yellow(accountOrder.toString())} ${
-                        TextColors.gray(
+                    "Server accepts create ${yellow(accountOrder.toString())} ${
+                        gray(
                             orderLinkId
                         )
                     }"
                 }
             } catch (e: CustomResponseException) {
                 logger.warn {
-                    "Failed (${TextColors.red(e.message)}) create order: ${
-                        TextColors.yellow(
+                    "Failed (${red(e.message)}) create order: ${
+                        yellow(
                             accountOrder.toString()
                         )
                     }"
@@ -977,8 +983,8 @@ class ByBitBroker(
                 _account.completeOrder(accountOrder, Instant.now())
 
                 logger.debug {
-                    "Server accepts Market order ${TextColors.yellow(accountOrder.toString())} ${
-                        TextColors.gray(
+                    "Server accepts Market order ${yellow(accountOrder.toString())} ${
+                        gray(
                             orderLinkId
                         )
                     }"
@@ -986,8 +992,8 @@ class ByBitBroker(
 
             } catch (e: CustomResponseException) {
                 logger.warn {
-                    "Failed (${TextColors.red(e.message)}) market order: ${
-                        TextColors.yellow(
+                    "Failed (${red(e.message)}) market order: ${
+                        yellow(
                             order.toString()
                         )
                     }"
@@ -1035,7 +1041,7 @@ class ByBitBroker(
                     true -> null
                     false -> {
                         logger.info(
-                            "Amending order qty: from ${originalLimitOrder.size} to ${updatedLimitOrder.size} " + TextColors.gray(
+                            "Amending order qty: ${dim(yellow(originalLimitOrder.size.toString()))} → ${brightYellow(updatedLimitOrder.size.toString())} " + gray(
                                 orderLinkId
                             )
                         )
@@ -1046,7 +1052,7 @@ class ByBitBroker(
                     true -> null
                     false -> {
                         logger.info(
-                            "Amending order price from ${originalLimitOrder.limit} to ${updatedLimitOrder.limit} " + TextColors.gray(
+                            "Amending order price from ${originalLimitOrder.limit} to ${updatedLimitOrder.limit} " + gray(
                                 orderLinkId
                             )
                         )
@@ -1076,25 +1082,19 @@ class ByBitBroker(
                             )
 
                             val now = Instant.now()
+                            logger.debug("_account.updateOrder : ${cyan(updateAOrder.update.toString())}")
+                            _account.updateOrder(updateAOrder.update, now, OrderStatus.ACCEPTED)
+                            logger.debug("_account.completeOrder : ${magenta(updateAOrder.toString())}")
                             _account.completeOrder(updateAOrder, now)
-                            _account.updateOrder(updateOrder.update, now, OrderStatus.ACCEPTED)
 
                             logger.debug {
-                                "Server accepts amend ${TextColors.yellow(updateAOrder.toString())} ${
-                                    TextColors.gray(
-                                        orderLinkId
-                                    )
-                                }"
+                                "Server accepts amend ${brightYellow(updateAOrder.toString())} ${gray(orderLinkId)}"
                             }
                             //placedOrders[orderLinkId] = updateOrder.update.id // turns out this isn't needed, same id
 
                         } catch (e: CustomResponseException) {
                             logger.warn {
-                                "Failed (${TextColors.red(e.message)}) amending order: ${
-                                    TextColors.yellow(
-                                        updateAOrder.toString()
-                                    )
-                                }"
+                                "Failed (${red(e.message)}) amending order: ${yellow(updateAOrder.toString())}"
                             }
 
                             val now = Instant.now()
@@ -1132,7 +1132,7 @@ class ByBitBroker(
                     }
                     logger.info(
                         "Spent ${
-                            TextColors.brightBlue(
+                            brightBlue(
                                 timeSpent.toString()
                             )
                         } amending order"

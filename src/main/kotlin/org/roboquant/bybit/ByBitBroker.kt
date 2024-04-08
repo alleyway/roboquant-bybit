@@ -37,6 +37,7 @@ import java.math.RoundingMode
 import java.time.Duration
 import java.time.Instant
 import java.util.*
+import kotlin.math.abs
 import kotlin.system.measureTimeMillis
 
 
@@ -259,7 +260,7 @@ class ByBitBroker(
                                         mktPrice = serverPosition.markPrice.toDouble(),
                                         lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
                                         leverage = serverPosition.leverage.toDouble(),
-                                        margin = serverPosition.positionBalance.toDouble()
+//                                        margin = serverPosition.positionBalance.toDouble()
                                     )
                                 )
                             }
@@ -515,16 +516,28 @@ class ByBitBroker(
             val sign = if (positionItem.side == Side.Sell) -1 else 1
             val serverSize = Size(positionItem.size.toDouble().times(sign))
 
-            _account.setPosition(
-                Position(
-                    asset,
-                    size = serverSize,
-                    avgPrice = positionItem.entryPrice.toDouble(),
-                    mktPrice = positionItem.markPrice.toDouble(),
-                    lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
-                    leverage = positionItem.leverage.toDouble(),
-                    margin = positionItem.positionBalance.toDouble()
+            val serverMargin = positionItem.positionBalance.toDouble()
+
+            val newPosition = Position(
+                asset,
+                size = serverSize,
+                avgPrice = positionItem.entryPrice.toDouble(),
+                mktPrice = positionItem.markPrice.toDouble(),
+                lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
+                leverage = positionItem.leverage.toDouble(),
                 )
+
+            val calculatedMargin = newPosition.marginCalculated.value
+
+            val difference = abs(serverMargin - calculatedMargin)
+            val percentDifference = (difference / serverMargin) * 100
+
+            val threshold = 0.23
+            if (percentDifference > threshold) {
+                logger.warn("Server reported margin(${serverMargin}) and calculated margin(${calculatedMargin}) exceeds threshold ($threshold): $percentDifference")
+            }
+            _account.setPosition(
+                newPosition
             )
         }
     }

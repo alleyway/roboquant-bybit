@@ -384,9 +384,8 @@ class ByBitLiveFeed(
     /**
      * Disconnect from ByBit server and stop receiving market data
      */
-    fun disconnect() {
+
+    override fun close() {
         wsClient.disconnect()
     }
-
-
 }

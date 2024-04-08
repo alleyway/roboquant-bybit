@@ -2,7 +2,8 @@ package org.roboquant.bybit
 
 import org.roboquant.brokers.sim.AccountModel
 import org.roboquant.brokers.sim.execution.InternalAccount
-import org.roboquant.common.*
+import org.roboquant.common.Amount
+import org.roboquant.common.percent
 
 class MarginAccountInverse(
     private val leverage: Double, private val minimumMarginRate: Double = 0.5.percent
@@ -22,6 +23,29 @@ class MarginAccountInverse(
         val positions = account.portfolio.values
 
 //        val excessMargin = account.cash + positions.marketValue
+
+        // totalCost is just size * avgPrice
+
+
+        // Currently, the position.margin is updated via websocket stream
+        // in the simulator, it's being stuck at 0.0
+
+
+        // ByBit ADA example
+        // Qty      Value               EntryPrice      Liq Price       Position Margin
+        // 4033     Qty/EntryPrice      0.5764          ???             Value/BrokerLeverage + fees to close
+
+        // in roboquant "Value" above is position.totalCost
+
+        // positions.first().totalCost.absoluteValue.value  = size * avgPrice (more or less)
+
+
+        /*
+            I could calculate position margin by simply
+         */
+
+
+        // val pl = position.totalCost.absoluteValue.value / (position.margin + account.cashAmount.absoluteValue.value) * position.size.sign
 
 
 

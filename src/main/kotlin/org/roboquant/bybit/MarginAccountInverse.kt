@@ -1,18 +1,73 @@
 package org.roboquant.bybit
 
+import com.github.ajalt.mordant.rendering.TextColors
 import org.roboquant.brokers.sim.AccountModel
 import org.roboquant.brokers.sim.execution.InternalAccount
-import org.roboquant.common.Amount
-import org.roboquant.common.percent
+import org.roboquant.common.*
+import org.roboquant.orders.LimitOrder
+import kotlin.math.ceil
+import kotlin.math.floor
 
 class MarginAccountInverse(
-    private val leverage: Double, private val minimumMarginRate: Double = 0.5.percent
+    private val leverage: Double,
+    val makerRate: Double,
+    val takerRate: Double,
+    private val minimumMarginRate: Double = 0.5.percent
 ) : AccountModel {
+
+    private val logger = Logging.getLogger(this::class)
 
     init {
         require(leverage in 0.0..120.0) { "leverage between 0.0 and 120.0" }
         require(minimumMarginRate in 0.0..1.0) { "minimumMarginRate between 0.0 and 1.0" }
     }
+
+
+    private fun calculateOrdersMargin(ordersList: List<LimitOrder>, currentPositionSize: Size): Wallet {
+        val wallet = Wallet()
+
+        val isSellOrders = ordersList.isNotEmpty() && ordersList.first().sell
+
+        val sortedOrders = if (isSellOrders)
+            ordersList.sortedBy { it.limit }
+        else
+            ordersList.sortedByDescending { it.limit }
+
+        var remaining =
+            if (currentPositionSize.isPositive || isSellOrders)
+                Size(0.0)
+            else
+                currentPositionSize.unaryMinus()
+
+        sortedOrders.forEach {
+
+            val adjustedSize = if (remaining.absoluteValue >= it.size.absoluteValue) {
+                remaining -= it.size
+                Size(0.0)
+            } else {
+                val thisSize = it.size - remaining
+                remaining = Size(0.0)
+                thisSize
+            }
+
+            val orderValue = it.asset.value(adjustedSize, it.limit).absoluteValue
+
+            val initialMargin = orderValue / leverage
+            val feeToOpenPosition = orderValue * takerRate
+
+            // this bankruptcy price is for ISOLATED margin mode!
+            val bankruptcyPrice = if (it.size.isPositive) {
+                ceil(it.limit * leverage / (leverage + 1))
+            } else {
+                floor(it.limit * leverage / (leverage - 1))
+            }
+
+            val feeToClosePosition = it.asset.value(adjustedSize.absoluteValue, bankruptcyPrice) * takerRate
+            wallet.deposit(initialMargin + feeToOpenPosition + feeToClosePosition)
+        }
+        return wallet
+    }
+
 
     /**
      * @see [AccountModel.updateAccount]
@@ -21,6 +76,63 @@ class MarginAccountInverse(
         val time = account.lastUpdate
         val currency = account.baseCurrency
         val positions = account.portfolio.values
+
+
+        val cashValue = account.cash.convert(currency, time).value
+
+        // Attempt to replicate ByBit's totalPositionIM in the wallet API
+        val totalPositionIM = positions.sumOf {
+            val initialMargin = Amount(it.asset.currency, it.size.absoluteValue.toDouble() / (it.avgPrice * leverage))
+            val bankruptcyPrice = if (it.size.isPositive) {
+                ceil(it.avgPrice * leverage / (leverage + 1))
+            } else {
+                floor(it.avgPrice * leverage / (leverage - 1))
+            }
+            val feeToClosePosition = it.asset.value(it.size.absoluteValue, bankruptcyPrice) * takerRate
+
+            (initialMargin + feeToClosePosition).convert(it.asset.currency)
+        }
+
+        logger.debug("totalPositionIM = $totalPositionIM") // 0.07159567
+
+
+        // https://www.bybit.com/en/help-center/article/Order-Cost-Inverse-Contract
+
+        // https://www.bybit.com/en/help-center/article/Bankruptcy-Price-Inverse-Contract
+
+        // Attempt to replicate ByBit's totalOrderIM in the wallet API, compare to logging output in ByBitBroker
+
+        val currentPositionSize = positions.firstOrNull()?.size ?: Size(0.0)
+
+        val buyOrders = account.orders
+            .filter { it.order.type == "LIMIT" && (it.order as LimitOrder).buy }
+            .map { (it.order as LimitOrder) }
+
+        val sellOrders = account.orders
+            .filter { it.order.type == "LIMIT" && (it.order as LimitOrder).sell }
+            .map { (it.order as LimitOrder) }
+
+        val buyOrderIM = calculateOrdersMargin(buyOrders, currentPositionSize).convert(currency, time)
+        val sellOrderIM = calculateOrdersMargin(sellOrders, currentPositionSize).convert(currency, time)
+
+        val totalOrderIM = if (buyOrderIM >= sellOrderIM) {
+            buyOrderIM
+        } else {
+            sellOrderIM
+        }
+
+        logger.debug("totalOrderIM = ${TextColors.yellow(totalOrderIM.convert(currency, time).toString())}")
+
+        val cashRemaining = cashValue - totalOrderIM
+            .convert(currency, time).value - totalPositionIM
+            .convert(currency, time).value
+
+        logger.debug("cashRemaining = $cashRemaining (avail to withdraw?)")
+
+        val buyingPower = cashRemaining * leverage
+
+        logger.debug("buyingPower = $buyingPower")
+
 
 //        val excessMargin = account.cash + positions.marketValue
 
@@ -48,8 +160,6 @@ class MarginAccountInverse(
         // val pl = position.totalCost.absoluteValue.value / (position.margin + account.cashAmount.absoluteValue.value) * position.size.sign
 
 
-
-
 //        val longExposure = positions.long.exposure.convert(currency, time) * minimumMarginRate
 //        excessMargin.withdraw(longExposure)
 //
@@ -58,8 +168,12 @@ class MarginAccountInverse(
 
 //      https://www.bybit.com/en-US/help-center/bybitHC_Article?id=360039261214&language=en_US
         //// comment out above the following sorta works  for live trading
-        val cashValue = account.cash.convert(currency, time).value
-        val buyingPower = cashValue * leverage - (cashValue * 0.0385) // SHOULD_DO: be more accurate
+
+        if (cashRemaining < 0) {
+            println("oops")
+        }
+
+
         account.buyingPower = Amount(currency, buyingPower)
     }
 

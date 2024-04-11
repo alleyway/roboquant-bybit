@@ -1,6 +1,6 @@
 package org.roboquant.bybit
 
-import com.github.ajalt.mordant.rendering.TextColors
+import com.github.ajalt.mordant.rendering.TextColors.*
 import org.roboquant.brokers.sim.AccountModel
 import org.roboquant.brokers.sim.execution.InternalAccount
 import org.roboquant.common.*
@@ -77,8 +77,8 @@ class MarginAccountInverse(
         val currency = account.baseCurrency
         val positions = account.portfolio.values
 
-
-        val cashValue = account.cash.convert(currency, time).value
+        val cash = account.cash
+        logger.debug("account.cash = ${blue(cash.toString())} (~ByBit: walletBalance)")
 
         // Attempt to replicate ByBit's totalPositionIM in the wallet API
         val totalPositionIM = positions.sumOf {
@@ -91,10 +91,9 @@ class MarginAccountInverse(
             val feeToClosePosition = it.asset.value(it.size.absoluteValue, bankruptcyPrice) * takerRate
 
             (initialMargin + feeToClosePosition).convert(it.asset.currency)
-        }
+        }.convert(currency, time)
 
-        logger.debug("totalPositionIM = $totalPositionIM") // 0.07159567
-
+        logger.debug("totalPositionIM = ${brightWhite(totalPositionIM.toString())}")
 
         // https://www.bybit.com/en/help-center/article/Order-Cost-Inverse-Contract
 
@@ -121,13 +120,11 @@ class MarginAccountInverse(
             sellOrderIM
         }
 
-        logger.debug("totalOrderIM = ${TextColors.yellow(totalOrderIM.convert(currency, time).toString())}")
+        logger.debug("totalOrderIM = ${yellow(totalOrderIM.convert(currency, time).toString())}")
 
-        val cashRemaining = cashValue - totalOrderIM
-            .convert(currency, time).value - totalPositionIM
-            .convert(currency, time).value
+        val cashRemaining = cash - totalOrderIM - totalPositionIM
 
-        logger.debug("cashRemaining = $cashRemaining (avail to withdraw?)")
+        logger.debug("cashRemaining = ${green(cashRemaining.toString())} (~ByBit: availableToWithdraw)")
 
         val buyingPower = cashRemaining * leverage
 
@@ -169,12 +166,12 @@ class MarginAccountInverse(
 //      https://www.bybit.com/en-US/help-center/bybitHC_Article?id=360039261214&language=en_US
         //// comment out above the following sorta works  for live trading
 
-        if (cashRemaining < 0) {
-            println("oops")
+        if (cashRemaining.convert(currency,time) < 0) {
+            //logger.error { "oops, our cash remaining which determines buyingPower is negative!"}
         }
 
 
-        account.buyingPower = Amount(currency, buyingPower)
+        account.buyingPower = buyingPower.convert(currency,time)
     }
 
 }

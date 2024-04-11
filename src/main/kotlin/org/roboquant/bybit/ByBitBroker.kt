@@ -182,15 +182,15 @@ class ByBitBroker(
 
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
-        if (period.seconds > 60) {
+        if (period.seconds > 10) {
             val initialOrderIds =
                 _account.orders.filter { it.status == OrderStatus.INITIAL }.map { it.orderId }.toSet()
             if (initialOrderIds.isNotEmpty() && prevInitialOrderIds.isNotEmpty()) {
                 prevInitialOrderIds.intersect(initialOrderIds).forEach {
-                        val stuckOrder = _account.getOrder(it)
-                        logger.warn { "rejecting account order of stuck at status INITIAL: [$stuckOrder]" }
-                        _account.rejectOrder(stuckOrder!!, Instant.now())
-                        prevInitialOrderIds.remove(it)
+                    val stuckOrder = _account.getOrder(it)
+                    logger.warn { "rejecting account order of stuck at status INITIAL: [$stuckOrder]" }
+                    _account.rejectOrder(stuckOrder!!, Instant.now())
+                    prevInitialOrderIds.remove(it)
                 }
             }
             prevInitialOrderIds.addAll(initialOrderIds)
@@ -259,7 +259,7 @@ class ByBitBroker(
                                         avgPrice = serverPosition.avgPrice.toDouble(),
                                         mktPrice = serverPosition.markPrice.toDouble(),
                                         lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
-                                        leverage = serverPosition.leverage.toDouble(),
+//                                        leverage = serverPosition.leverage.toDouble(),
 //                                        margin = serverPosition.positionBalance.toDouble()
                                     )
                                 )
@@ -356,7 +356,7 @@ class ByBitBroker(
                                     // the most recent update from REST.
 
                                     // logger.info("WS: bybit.OrderStatus.New -> roboquant.OrderStatus.ACCEPTED")
-                                   // _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
+                                    // _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
                                 }
                             }
                         }
@@ -418,38 +418,49 @@ class ByBitBroker(
             is ByBitWebSocketMessage.PrivateTopicResponse.Wallet -> {
 
                 for (coinItem in (message.data.filter { it.accountType == AccountType.CONTRACT }).first().coin) {
-                    if (coinItem.coin == "BTC") {
-                        // available to withdraw removes orders on the books
+                    if (coinItem.coin == baseCurrency.currencyCode) {
 
                         // https://www.bybit.com/fil-PH/help-center/article/Derivatives-or-Inverse-Derivatives-Acccount
 
-                        // From server perspective:
-                        // Equity = Wallet Balance + Unrealized P&L (in Mark Price)
-                        // Wallet Balance = Available Balance + Position Margin + Order Margin
-                        val walletBalance = coinItem.walletBalance.toDouble()
+                        // WARNING: be sure to sync with what's happening in the WS wallet updates too!
+
+                        val p = cyan("WS:")
+
+                        val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
+                        logger.warn("$p walletBalance: ${blue(walletBalance.toString())}")
+
+                        val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
+                        logger.warn("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+
+                        val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
+                        logger.warn("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+
+                        val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
+                        logger.warn("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+
+
+//                        val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
+//                        logger.warn("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
+
+                        // -- Equity = Wallet Balance + Unrealized P&L (in Mark Price)
+                        //val equity = coinItem.equity.toDouble()
 
                         val unrealizedPnL = coinItem.unrealisedPnl.toDouble()
 
-                        // I guess this is like "exposure" ???
-                        val totalPositionIM = coinItem.totalPositionIM.toDouble()
+                        val loss = if (unrealizedPnL.isFinite() && unrealizedPnL < 0) {
+                            unrealizedPnL
+                        } else 0.0
 
 
-                        val totalOrderIM = coinItem.totalOrderIM.toDouble()
-                        logger.debug("ByBitWebSocketMessage.PrivateTopicResponse.Wallet | walletBalance: $walletBalance")
+                        val cash = walletBalance.value
+                        val existingCashAmount = _account.cash.convert(baseCurrency)
+                        if (existingCashAmount != walletBalance) {
+                            logger.warn("$p _account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                            _account.cash.set(baseCurrency, cash)
+                        }
 
-                        // Arrive at "available balance"
-                        val cash = walletBalance - totalPositionIM //+ unrealizedPnL //- totalOrderIM
-
-                        // exposure and totalPositionIM should be close. might be slightly different as bybit calculates
-                        // by mark price
-
-//                        if ((totalPositionIM - _account.portfolio.values.exposure[Currency.BTC]).absoluteValue > 0.0001) {
-//
-//
-//                        }
                         // WARNING: be sure to sync with what's happening in the syncAccountCashFromAPI() updates too!
 
-                        _account.cash.set(Currency.getInstance(coinItem.coin), cash)
                     }
                 }
 
@@ -524,15 +535,15 @@ class ByBitBroker(
                 avgPrice = positionItem.entryPrice.toDouble(),
                 mktPrice = positionItem.markPrice.toDouble(),
                 lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
-                leverage = positionItem.leverage.toDouble(),
-                )
+//                leverage = positionItem.leverage.toDouble(),
+            )
 
-            val calculatedMargin = newPosition.marginCalculated.value
+            val calculatedMargin = newPosition.totalCost.absoluteValue.value / positionItem.leverage.toDouble()
 
             val difference = abs(serverMargin - calculatedMargin)
             val percentDifference = (difference / serverMargin) * 100
 
-            val threshold = 0.23
+            val threshold = 0.25
             if (percentDifference > threshold) {
                 logger.warn("Server reported margin(${serverMargin}) and calculated margin(${calculatedMargin}) exceeds threshold ($threshold): $percentDifference")
             }
@@ -574,18 +585,19 @@ class ByBitBroker(
                         && !openOrderLinkIds.contains(it.key)
                     ) {
                         val now = Instant.now()
-                        if (orderState.status != OrderStatus.INITIAL) {
+                        if (orderState.status != OrderStatus.INITIAL
+                            && orderState.openedAt.isAfter(now.plusSeconds(2))) { // sometimes server isn't aware immediately!
                             logger.warn(
                                 "Completing order that existed in _account.openOrders, but was not found on server:\n "
                                         + "${orderState.order} "
                             )
                             _account.updateOrder(orderState.order, now, OrderStatus.COMPLETED)
                         } else {
-                            // if we have some old order stuck in INITIAL status, reject it
+                            // if we have some old order stuck in INITIAL status, maybe reject it? Don't have create time...
 
                             logger.warn(
                                 "Found INITIAL order that existed in _account.openOrders, but was not found on server:\n "
-                                        + "${orderState.order} "
+                                        + "${orderState.order} ..doing nothing."
                             )
                         }
                     }
@@ -602,27 +614,34 @@ class ByBitBroker(
         val walletBalanceResp = client.accountClient.getWalletBalanceBlocking(WalletBalanceParams(accountType))
 
         for (coinItem in walletBalanceResp.result.list.first().coin.filter { it.coin == baseCurrency.currencyCode }) {
-//            val equityValue = coinItem.equity.toDouble()
-//            // in theory we could arrive at our cash by the following:
-//            // equity - orders value - position value
-//
-//            _account.cash.set(Currency.getInstance(coinItem.coin), equityValue)
 
             // WARNING: be sure to sync with what's happening in the WS wallet updates too!
-            val walletBalance = coinItem.walletBalance.toDouble()
+
+            val p = cyan("API:")
+
+            val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
+            logger.warn("$p walletBalance: ${blue(walletBalance.toString())}")
+
+            val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
+            logger.warn("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+
+            val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
+            logger.warn("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+
+            val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
+            logger.warn("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+
+//            val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
+//            logger.warn("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
 
             val unrealizedPnL = coinItem.unrealisedPnl.toDouble()
 
-            // I guess this is like "exposure" ???
-            val totalPositionIM = coinItem.totalPositionIM.toDouble()
-            val totalOrderIM = coinItem.totalOrderIM.toDouble()
-
-            val cash = walletBalance - totalPositionIM //+ unrealizedPnL //- totalOrderIM
-            logger.info("syncAccountCash() cash: $cash")
-            _account.cash.set(Currency.getInstance(coinItem.coin), cash)
-
-            // think i'm suppose to multiple my leverage by cash
-//            _account.buyingPower = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
+            val cash = walletBalance.value
+            val existingCashAmount = _account.cash.convert(baseCurrency)
+            if (existingCashAmount.value != cash) {
+                logger.warn("_account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                _account.cash.set(baseCurrency, cash)
+            }
         }
     }
 
@@ -661,7 +680,7 @@ class ByBitBroker(
         val execSize = Size(execution.execQty) * sign
 
         logger.info(
-            "WS: Executed ${execution.orderType} ${execution.side} "
+            "WS: EXECUTED ${execution.orderType} ${execution.side} "
                     + cyan(execSize.toString())
                     + " @ ${brightBlue(execPrice.toString())} "
                     + gray(execution.orderLinkId)
@@ -695,7 +714,10 @@ class ByBitBroker(
                 rqOrderId
             )
             _account.addTrade(newTrade)
-            _account.cash.withdraw(newTrade.totalCost)
+            logger.warn("new trade total fee: ${newTrade.fee}")
+            logger.warn("closed size: ${execution.closedSize}")
+//            logger.warn("WS: withdraw from _account.cash from this trade, is it correct??")
+            _account.cash.withdraw(newTrade.fee)
         }
 
         // in theory we shouldn't need to do this as will be updated by WebSockets
@@ -736,21 +758,21 @@ class ByBitBroker(
 
                 is UpdateOrder -> {
                     val symbol = order.asset.symbol
-                        val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
-                        if (orderLinkId != null) {
+                    val orderLinkId = placedOrders.entries.find { it.value == order.order.id }?.key
+                    if (orderLinkId != null) {
 //                            placedOrders[orderLinkId] = order.id
 //                            logger.debug("amend() will update status for orderLinkId: ${orderLinkId}")
 
 //                            if (_account.orders.none { order.tag == it.order.tag }) {
-                                amend(orderLinkId, symbol, order)
+                        amend(orderLinkId, symbol, order)
 //                            } else {
 //                                logger.info("not amending order b/c existing _account.orders with same tag")
 //                            }
 
-                        } else {
-                            logger.warn("Unable to find placed order of order to update, rejecting amend")
-                            _account.rejectOrder(order, Instant.now())
-                        }
+                    } else {
+                        logger.warn("Unable to find placed order of order to update, rejecting amend")
+                        _account.rejectOrder(order, Instant.now())
+                    }
                 }
 
                 else -> logger.warn {
@@ -824,7 +846,6 @@ class ByBitBroker(
             }
         }
     }
-
 
 
     private fun cancelAllOrders(cancelOrders: List<CancelOrder>) {
@@ -1054,7 +1075,11 @@ class ByBitBroker(
                     true -> null
                     false -> {
                         logger.info(
-                            "Amending order qty: ${dim(yellow(originalLimitOrder.size.toString()))} → ${brightYellow(updatedLimitOrder.size.toString())} " + gray(
+                            "Amending order qty: ${dim(yellow(originalLimitOrder.size.toString()))} → ${
+                                brightYellow(
+                                    updatedLimitOrder.size.toString()
+                                )
+                            } " + gray(
                                 orderLinkId
                             )
                         )
@@ -1150,6 +1175,7 @@ class ByBitBroker(
                     )
                 }
             }
+
             else -> {
                 throw Exception("Tried to amend non-limit order type: ${updateOrder.update::class}")
             }

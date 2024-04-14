@@ -28,6 +28,8 @@ internal class MarginAccountInverseTest {
         id = "linearOrInverse::InversePerpetual"
     )
 
+    private val makerRate = 0.00018
+    private val takerRate = 0.0004
 
     fun bitcoinInternalAccount(): InternalAccount {
         val account = InternalAccount(BTC)
@@ -39,7 +41,7 @@ internal class MarginAccountInverseTest {
     fun test3() {
         val account = bitcoinInternalAccount()
         val cc = account.baseCurrency
-        val uc = MarginAccountInverse(3.0)
+        val uc = MarginAccountInverse(3.0, makerRate, takerRate)
         uc.updateAccount(account)
         assertTrue(account.buyingPower.value > account.cash[cc])
     }
@@ -68,13 +70,13 @@ internal class MarginAccountInverseTest {
     @Test
     fun testMarginAccountLong() {
         val initial = 0.1.BTC
-        val broker = getSimBroker(initial, MarginAccountInverse(3.0))
+        val broker = getSimBroker(initial, MarginAccountInverse(3.0, makerRate, takerRate))
 
         var account = update(broker, bitcoinAsset, 30_000, 1000)
 
         account.positions[0].marketValue // will calculate different if inverse
 
-        assertEquals(0.2632049577777778.BTC, account.buyingPower)
+        assertEquals(0.26657333333333333.BTC, account.buyingPower)
 
         account = update(broker, bitcoinAsset, 31_000, -2000)
 
@@ -89,13 +91,13 @@ internal class MarginAccountInverseTest {
     fun testMarginAccountShort() {
 
         val initial = 0.1.BTC
-        val broker = getSimBroker(initial, MarginAccountInverse(3.0))
+        val broker = getSimBroker(initial, MarginAccountInverse(3.0, makerRate, takerRate))
 
         var account = update(broker, bitcoinAsset, 30_000, -1000)
 
         account.positions[0].marketValue // will calculate different if inverse
 
-        assertEquals(0.2632049577777778.BTC, account.buyingPower)
+        assertEquals(0.2666.BTC, account.buyingPower)
 
         account = update(broker, bitcoinAsset, 29_000, 1000)
 

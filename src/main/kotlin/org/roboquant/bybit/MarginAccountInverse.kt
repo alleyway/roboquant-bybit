@@ -3,7 +3,11 @@ package org.roboquant.bybit
 import com.github.ajalt.mordant.rendering.TextColors.*
 import org.roboquant.brokers.sim.AccountModel
 import org.roboquant.brokers.sim.execution.InternalAccount
-import org.roboquant.common.*
+import org.roboquant.common.Logging
+import org.roboquant.common.Size
+import org.roboquant.common.Wallet
+import org.roboquant.common.percent
+import org.roboquant.common.sumOf
 import org.roboquant.orders.LimitOrder
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -82,18 +86,10 @@ class MarginAccountInverse(
 
         // Attempt to replicate ByBit's totalPositionIM in the wallet API
         val totalPositionIM = positions.sumOf {
-            val initialMargin = Amount(it.asset.currency, it.size.absoluteValue.toDouble() / (it.avgPrice * leverage))
-            val bankruptcyPrice = if (it.size.isPositive) {
-                ceil(it.avgPrice * leverage / (leverage + 1))
-            } else {
-                floor(it.avgPrice * leverage / (leverage - 1))
-            }
-            val feeToClosePosition = it.asset.value(it.size.absoluteValue, bankruptcyPrice) * takerRate
-
-            (initialMargin + feeToClosePosition).convert(it.asset.currency)
+            it.calcMarginUsage(leverage, takerRate)
         }.convert(currency, time)
 
-        logger.debug("totalPositionIM = ${brightWhite(totalPositionIM.toString())}")
+//        logger.debug("totalPositionIM = ${brightWhite(totalPositionIM.toString())}")
 
         // https://www.bybit.com/en/help-center/article/Order-Cost-Inverse-Contract
 
@@ -102,12 +98,12 @@ class MarginAccountInverse(
         // Attempt to replicate ByBit's totalOrderIM in the wallet API, compare to logging output in ByBitBroker
 
         val currentPositionSize = positions.firstOrNull()?.size ?: Size(0.0)
-
-        val buyOrders = account.orders
+        val orders = account.orders.toList() // should make a copy
+        val buyOrders = orders
             .filter { it.order.type == "LIMIT" && (it.order as LimitOrder).buy }
             .map { (it.order as LimitOrder) }
 
-        val sellOrders = account.orders
+        val sellOrders = orders
             .filter { it.order.type == "LIMIT" && (it.order as LimitOrder).sell }
             .map { (it.order as LimitOrder) }
 
@@ -128,7 +124,7 @@ class MarginAccountInverse(
 
         val buyingPower = cashRemaining * leverage
 
-        logger.debug("buyingPower = $buyingPower")
+        logger.debug { "buyingPower = $buyingPower" }
 
 
 //        val excessMargin = account.cash + positions.marketValue
@@ -166,12 +162,12 @@ class MarginAccountInverse(
 //      https://www.bybit.com/en-US/help-center/bybitHC_Article?id=360039261214&language=en_US
         //// comment out above the following sorta works  for live trading
 
-        if (cashRemaining.convert(currency,time) < 0) {
-            //logger.error { "oops, our cash remaining which determines buyingPower is negative!"}
-        }
+//        if (cashRemaining.convert(currency, time) < 0) {
+//            //logger.error { "oops, our cash remaining which determines buyingPower is negative!"}
+//        }
 
 
-        account.buyingPower = buyingPower.convert(currency,time)
+        account.buyingPower = buyingPower.convert(currency, time)
     }
 
 }

@@ -242,6 +242,9 @@ class ByBitBroker(
                         logger.warn { "Found serverPosition with symbol not in assetMap" }
                     } else {
 
+                        // excluding other assets besides the one we're trading for now
+                        if (asset.currency !== baseCurrency) return
+
                         val sign = if (serverPosition.side == Side.Sell) -1 else 1
                         val serverSize = Size(serverPosition.size.toDouble().times(sign))
 
@@ -523,6 +526,7 @@ class ByBitBroker(
             logger.warn { "Found serverPosition with symbol not in assetMap" }
         } else {
             //val currentPos = _account.portfolio.getOrDefault(asset, Position.empty(asset))
+            if (asset.currency !== baseCurrency) return
 
             val sign = if (positionItem.side == Side.Sell) -1 else 1
             val serverSize = Size(positionItem.size.toDouble().times(sign))
@@ -645,33 +649,21 @@ class ByBitBroker(
         }
     }
 
-    private fun updatePosition(position: Position): Amount {
-        val asset = position.asset
-        val p = _account.portfolio
-        val currentPos = p.getOrDefault(asset, Position.empty(asset))
-        val newPosition = currentPos + position
-        if (newPosition.closed)
-            p.remove(asset)
-        else
-            p[asset] = newPosition
-        return currentPos.realizedPNL(position)
-    }
+    /**
+     * Update the portfolio with the provided [position] and return the realized PNL as a consequence of this position
+     * change.
+     */
+
+//    private fun updatePosition(position: Position): Amount {
+//        val asset = position.asset
+//        val p = _account.portfolio
+//        val currentPos = p.getOrDefault(asset, Position.empty(asset))
+//        val newPosition = currentPos + position
+//        if (newPosition.closed) p.remove(asset) else p[asset] = newPosition
+//        return currentPos.realizedPNL(position)
+//    }
 
     private fun executionUpdateFromWebsocket(execution: ByBitWebSocketMessage.ExecutionItem) {
-
-        val asset = assetMap[execution.symbol]
-
-        if (asset == null) {
-            logger.warn("Received execution for unknown symbol: ${execution.symbol}")
-            return
-        }
-
-        val rqOrderId = placedOrders[execution.orderLinkId]
-
-        if (rqOrderId == null) {
-            logger.warn("Received execution order not placed in system. orderLinkId : ${execution.orderLinkId}, orderId : ${execution.orderId}")
-            //return
-        }
 
         val sign = if (execution.side == Side.Buy) 1 else -1
 
@@ -679,49 +671,70 @@ class ByBitBroker(
 
         val execSize = Size(execution.execQty) * sign
 
-        logger.info(
-            "WS: EXECUTED ${execution.orderType} ${execution.side} "
+        val pre = yellow("WS:")
+
+        logger.debug(
+            "$pre EXECUTED ${execution.orderType} ${execution.side} "
                     + cyan(execSize.toString())
                     + " @ ${brightBlue(execPrice.toString())} "
                     + gray(execution.orderLinkId)
         )
 
-        if (rqOrderId !== null && execution.leavesQty == "0") {
+        val asset = assetMap[execution.symbol]
 
-            val rqOrder = _account.getOrder(rqOrderId)
-
-            if (rqOrder !== null) {
-                logger.debug("WS: Execution leaves 0 qty, update order status to completed")
-                _account.completeOrder(rqOrder, Instant.now())
-            }
+        if (asset == null) {
+            logger.warn("$pre Received execution for unknown symbol: ${execution.symbol}")
+            return
         }
-
-        val position = Position(asset, execSize, execPrice)
 
         // Calculate the fees that apply to this execution
-        val fee = execution.execFee.toDouble()
+        val feeAmount = Amount(asset.currency, execution.execFee.toDouble())
+        logger.debug("$pre _account.cash (before): ${brightYellow(_account.cash.toString())}")
+        logger.debug("$pre feeAmount: ${brightYellow(feeAmount.toString())}")
+//        _account.cash.withdraw(feeAmount)
 
-        val pnl = updatePosition(position) - fee
+        val rqOrderId = placedOrders[execution.orderLinkId]
+
+        val executionInstant = Instant.ofEpochMilli(execution.execTime.toLong())
 
         if (rqOrderId !== null) {
-            val newTrade = Trade(
-                Instant.ofEpochMilli(execution.execTime.toLong()),
-                asset,
-                execSize,
-                execPrice,
-                fee,
-                pnl.value,
-                rqOrderId
-            )
-            _account.addTrade(newTrade)
-            logger.warn("new trade total fee: ${newTrade.fee}")
-            logger.warn("closed size: ${execution.closedSize}")
-//            logger.warn("WS: withdraw from _account.cash from this trade, is it correct??")
-            _account.cash.withdraw(newTrade.fee)
+            val rqOrder = _account.getOrder(rqOrderId)
+            if (rqOrder !== null && execution.leavesQty == "0") {
+                logger.debug("$pre Execution leaves 0 qty, update order status to completed")
+                _account.completeOrder(rqOrder, executionInstant)
+            }
+        } else {
+            logger.warn("$pre Received execution order not placed in system. orderLinkId : ${execution.orderLinkId}, orderId : ${execution.orderId}")
         }
 
-        // in theory we shouldn't need to do this as will be updated by WebSockets
-        //  _account.cash.withdraw(newTrade.totalCost)
+        val execPos = Position(asset, execSize, execPrice)
+
+        // sanity check: MAKE SURE that when I'm opening or adding to position, that my PnL only reflects the fee
+
+        val p = _account.portfolio
+        val existingPos = p.getOrDefault(asset, Position.empty(asset))
+        val newPosition = existingPos + execPos // simply calculate size and avgPrice if adding to position
+        if (newPosition.closed) p.remove(asset) else p[asset] = newPosition
+
+        val pnl = existingPos.realizedPNL(execPos) - feeAmount
+
+        val newTrade = Trade(
+            executionInstant,
+            asset,
+            execSize,
+            execPrice,
+            feeAmount.value,
+            pnl.convert(asset.currency).value,
+            rqOrderId ?: -1
+        )
+
+        logger.debug("$pre pnl: ${brightYellow(pnl.toString())} (incl. fee to close)")
+
+        _account.addTrade(newTrade)
+
+        _account.cash.deposit(pnl)
+
+        logger.debug("$pre _account.cash (after): ${brightYellow(_account.cash.toString())}")
 
     }
 

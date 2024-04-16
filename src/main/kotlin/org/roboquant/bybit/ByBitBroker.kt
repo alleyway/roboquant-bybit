@@ -430,20 +430,20 @@ class ByBitBroker(
                         val p = cyan("WS:")
 
                         val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
-                        logger.warn("$p walletBalance: ${blue(walletBalance.toString())}")
+                        logger.debug("$p walletBalance: ${blue(walletBalance.toString())}")
 
                         val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
-                        logger.warn("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+                        logger.debug("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
 
                         val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
-                        logger.warn("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+                        logger.debug("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
 
                         val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
-                        logger.warn("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+                        logger.debug("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
 
 
 //                        val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
-//                        logger.warn("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
+//                        logger.debug("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
 
                         // -- Equity = Wallet Balance + Unrealized P&L (in Mark Price)
                         //val equity = coinItem.equity.toDouble()
@@ -458,7 +458,7 @@ class ByBitBroker(
                         val cash = walletBalance.value
                         val existingCashAmount = _account.cash.convert(baseCurrency)
                         if (existingCashAmount != walletBalance) {
-                            logger.warn("$p _account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                            logger.debug("$p _account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
                             _account.cash.set(baseCurrency, cash)
                         }
 
@@ -624,26 +624,26 @@ class ByBitBroker(
             val p = cyan("API:")
 
             val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
-            logger.warn("$p walletBalance: ${blue(walletBalance.toString())}")
+            logger.debug("$p walletBalance: ${blue(walletBalance.toString())}")
 
             val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
-            logger.warn("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+            logger.debug("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
 
             val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
-            logger.warn("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+            logger.debug("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
 
             val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
-            logger.warn("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+            logger.debug("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
 
 //            val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
-//            logger.warn("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
+//            logger.debug("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
 
             val unrealizedPnL = coinItem.unrealisedPnl.toDouble()
 
             val cash = walletBalance.value
             val existingCashAmount = _account.cash.convert(baseCurrency)
             if (existingCashAmount.value != cash) {
-                logger.warn("_account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                logger.debug("_account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
                 _account.cash.set(baseCurrency, cash)
             }
         }

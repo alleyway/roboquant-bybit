@@ -101,7 +101,7 @@ class ByBitHistoryFeed(
 
                 val actions = listOf(action)
                 val event = Event(actions, startTime.plusSeconds(duration.toSeconds()))
-                logger.info { "Sending event at ${event.time} with ${event.actions.size} actions" }
+                logger.debug { "Sending event at ${event.time} with ${event.actions.size} actions" }
 
                 channel.send(event)
             }

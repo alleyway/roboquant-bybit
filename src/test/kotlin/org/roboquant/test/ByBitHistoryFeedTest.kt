@@ -25,7 +25,7 @@ internal class ByBitHistoryFeedTest {
             val now = Instant.now()
             val feed = ByBitHistoryFeed(
                 configure = { testnet = true },
-                start = now.minus(1.days).toEpochMilli(),
+                start = now.minus(3.days).toEpochMilli(),
                 end = now.toEpochMilli(),
                 category = Category.spot,
                 interval = "60"

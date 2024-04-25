@@ -44,6 +44,7 @@ class ByBitHistoryFeed(
     private val client: ByBitRestClient
     private val config = ByBitConfig()
     private var duration = Duration.ofMinutes(1)
+    private val startIncreasePerIteration: Long
 
     init {
         config.configure()
@@ -63,6 +64,8 @@ class ByBitHistoryFeed(
                 else -> throw Exception("Unsupported interval $interval")
             }
         }
+
+        startIncreasePerIteration = duration.toMillis() * limit.toLong()
     }
 
     override suspend fun play(channel: EventChannel) {
@@ -74,7 +77,7 @@ class ByBitHistoryFeed(
                     symbol = symbol,
                     interval = interval,
                     start = start,
-                    end = end,
+                    end = null,
                     limit = limit
                 )
             )
@@ -106,7 +109,7 @@ class ByBitHistoryFeed(
                 channel.send(event)
             }
 
-            start += duration.toMillis() * limit.toLong()
+            start += (startIncreasePerIteration)
         } while (start < end!!)
     }
 }

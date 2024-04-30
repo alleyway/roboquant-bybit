@@ -104,7 +104,7 @@ class ByBitLiveFeed(
 //                    val action = TradePriceByBit(asset, it.price, it.volume ?: Double.NaN, it.tickDirection)
 
                     val sign = if (it.side == Side.Sell) -1 else 1
-                    val action = TradePrice(asset, it.price, it.volume.times(sign))
+                    val action = TradePriceByBit(asset, it.price, it.volume.times(sign), it.tickDirection)
                     send(Event(listOf(action), getTime(it.timestamp)))
                 }
             }

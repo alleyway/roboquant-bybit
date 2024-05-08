@@ -77,12 +77,14 @@ class MarginAccountInverse(
      * @see [AccountModel.updateAccount]
      */
     override fun updateAccount(account: InternalAccount) {
-        val time = account.lastUpdate
-        val currency = account.baseCurrency
-        val positions = account.portfolio.values
+        val immutableAccount = account.toAccount()
+
+        val time = immutableAccount.lastUpdate
+        val currency = immutableAccount.baseCurrency
+        val positions = immutableAccount.positions
 
         val cash = account.cash
-        logger.debug("account.cash = ${blue(cash.toString())} (~ByBit: walletBalance)")
+        logger.trace("account.cash = ${blue(cash.toString())} (~ByBit: walletBalance)")
 
         // Attempt to replicate ByBit's totalPositionIM in the wallet API
         val totalPositionIM = positions.sumOf {
@@ -98,7 +100,7 @@ class MarginAccountInverse(
         // Attempt to replicate ByBit's totalOrderIM in the wallet API, compare to logging output in ByBitBroker
 
         val currentPositionSize = positions.firstOrNull()?.size ?: Size(0.0)
-        val orders = account.orders.toList() // should make a copy
+        val orders = immutableAccount.openOrders
         val buyOrders = orders
             .filter { it.order.type == "LIMIT" && (it.order as LimitOrder).buy }
             .map { (it.order as LimitOrder) }
@@ -116,15 +118,15 @@ class MarginAccountInverse(
             sellOrderIM
         }
 
-        logger.debug("totalOrderIM = ${yellow(totalOrderIM.convert(currency, time).toString())}")
+        logger.trace("totalOrderIM = ${yellow(totalOrderIM.convert(currency, time).toString())}")
 
         val cashRemaining = cash - totalOrderIM - totalPositionIM
 
-        logger.debug("cashRemaining = ${green(cashRemaining.toString())} (~ByBit: availableToWithdraw)")
+        logger.trace("cashRemaining = ${green(cashRemaining.toString())} (~ByBit: availableToWithdraw)")
 
         val buyingPower = cashRemaining * leverage
 
-        logger.debug { "buyingPower = $buyingPower" }
+        logger.trace { "buyingPower = $buyingPower" }
 
 
 //        val excessMargin = account.cash + positions.marketValue
@@ -168,6 +170,10 @@ class MarginAccountInverse(
 
 
         account.buyingPower = buyingPower.convert(currency, time)
+
+//        if (account.buyingPower.value < 0) {
+//            logger.warn { "negative buyingPower = $buyingPower" }
+//        }
     }
 
 }

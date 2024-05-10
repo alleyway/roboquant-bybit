@@ -24,6 +24,7 @@ class TradeExecution (
 ) {
     companion object {
 
+        // not using for now since seemingly we get everything from normal executions
         fun fromFilledOrder(asset: Asset, order: ByBitWebSocketMessage.OrderItem, trades: List<Trade>, ): TradeExecution {
             val sign = if (order.side == Side.Buy) 1 else -1
 
@@ -52,7 +53,6 @@ class TradeExecution (
                 order.leavesQty,
                 Instant.ofEpochMilli(order.updatedTime.toLong())
             )
-
         }
 
         fun fromExecutionItem(asset: Asset, exec: ByBitWebSocketMessage.ExecutionItem): TradeExecution {

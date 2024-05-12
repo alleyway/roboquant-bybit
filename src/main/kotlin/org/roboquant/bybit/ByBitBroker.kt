@@ -16,10 +16,10 @@ import bybit.sdk.shared.TimeInForce
 import bybit.sdk.websocket.*
 import com.github.ajalt.mordant.rendering.TextColors.*
 import com.github.ajalt.mordant.rendering.TextStyles.dim
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import io.ktor.util.reflect.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import org.roboquant.brokers.Account
 import org.roboquant.brokers.Broker
 import org.roboquant.brokers.Position
@@ -37,8 +37,9 @@ import java.math.RoundingMode
 import java.time.Duration
 import java.time.Instant
 import java.util.*
-import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.system.measureTimeMillis
+import kotlin.time.Duration.Companion.milliseconds
 
 
 /**
@@ -79,6 +80,9 @@ class ByBitBroker(
     private var lastExpensiveSync = Instant.MIN
 
     private val accountType: AccountType
+
+    val api = yellow(dim("API:"))
+    val ws = cyan(dim("WS:"))
 
     init {
         config.configure()
@@ -125,7 +129,8 @@ class ByBitBroker(
 
         val scope = CoroutineScope(Dispatchers.Default + Job())
         scope.launch {
-            val channel = wsClient.getWebSocketEventChannel()
+            // We don't want to miss these critical WS messages relating to execution/orders/position!
+            val channel = wsClient.getWebSocketEventChannel(Channel.UNLIMITED, BufferOverflow.SUSPEND)
             wsClient.connect(subscriptions)
 
             while (true) {
@@ -174,11 +179,6 @@ class ByBitBroker(
     override fun sync(event: Event) {
         logger.trace { "Sync()" }
 
-        _account.updateMarketPrices(event)
-
-        _account.lastUpdate = event.time
-
-        accountModel.updateAccount(_account)
 
         val now = Instant.now()
         val period = Duration.between(lastExpensiveSync, now)
@@ -200,14 +200,17 @@ class ByBitBroker(
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     updateAccountFromAPI()
+                    _account.lastUpdate = Instant.now()
                 } catch (e: Exception) {
                     logger.error { "Caught exception trying to update account from API: \n ${e.stackTraceToString()}" }
                 }
             }
 
         }
-        account = _account.toAccount()
 
+        accountModel.updateAccount(_account)
+        _account.updateMarketPrices(event)
+        account = _account.toAccount()
     }
 
     private fun updateAccountFromAPI() {
@@ -239,36 +242,38 @@ class ByBitBroker(
                     val asset = assetMap[serverPosition.symbol]
 
                     if (asset == null) {
-                        logger.warn { "Found serverPosition with symbol not in assetMap" }
+                        logger.warn("$api Received position info for unknown symbol: ${serverPosition.symbol}")
+                        return
+                    }
+
+                    // excluding other assets besides the one we're trading for now
+                    if (asset.currency !== baseCurrency) return
+
+                    val sign = if (serverPosition.side == Side.Sell) -1 else 1
+                    val serverSize = Size(serverPosition.size.toDouble().times(sign))
+                    val serverLeverage = serverPosition.leverage.toDouble()
+
+                    val currentPos = p.getOrDefault(asset, Position.empty(asset))
+
+                    if (serverSize.iszero && p.containsKey(asset)) {
+                        p.remove(asset)
                     } else {
-
-                        // excluding other assets besides the one we're trading for now
-                        if (asset.currency !== baseCurrency) return
-
-                        val sign = if (serverPosition.side == Side.Sell) -1 else 1
-                        val serverSize = Size(serverPosition.size.toDouble().times(sign))
-
-                        val currentPos = p.getOrDefault(asset, Position.empty(asset))
-
-                        if (serverSize.iszero && p.containsKey(asset)) {
-                            p.remove(asset)
-                        } else {
-                            if (currentPos.size != serverSize) {
-                                logger.warn { "Different position from server when syncing" }
-                                _account.setPosition(
-                                    Position(
-                                        asset,
-                                        size = serverSize,
-                                        avgPrice = serverPosition.avgPrice.toDouble(),
-                                        mktPrice = serverPosition.markPrice.toDouble(),
-                                        lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
-//                                        leverage = serverPosition.leverage.toDouble(),
-//                                        margin = serverPosition.positionBalance.toDouble()
-                                    )
+                        if (currentPos.size != serverSize || currentPos.leverage != serverLeverage) {
+                            logger.warn { "Local position (${currentPos.size})/leverage (${currentPos.leverage}) Different from server(${serverSize})/(${serverLeverage}) when syncing" }
+                            _account.setPosition(
+                                Position(
+                                    asset,
+                                    size = serverSize,
+                                    avgPrice = serverPosition.avgPrice.toDouble(),
+                                    mktPrice = serverPosition.markPrice.toDouble(),
+                                    lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
+//                                margin = serverPosition.positionIM.toDouble()
+                                        leverage = serverLeverage,
                                 )
-                            }
+                            )
                         }
                     }
+
 
                 }
 
@@ -325,6 +330,8 @@ class ByBitBroker(
 
     private fun handler(message: ByBitWebSocketMessage) {
 
+        logger.warn("${magenta("WS:")} ${message::class.simpleName}")
+
         when (message) {
 
             is ByBitWebSocketMessage.StatusMessage -> {
@@ -337,11 +344,29 @@ class ByBitBroker(
 
             is ByBitWebSocketMessage.PrivateTopicResponse.Order -> {
 
-                for (order in message.data) {
-                    val orderId = placedOrders[order.orderLinkId] ?: continue
-                    val accountOrder = _account.getOrder(orderId) ?: continue
+                val orderItems = message.data.sortedBy { it.updatedTime }
 
-                    when (order.orderStatus) {
+                for (orderItem in orderItems) {
+                    logger.warn { "$ws server order: $orderItem" }
+
+                    val rqOrderId = placedOrders[orderItem.orderLinkId]
+
+                    if (rqOrderId == null) {
+                        logger.warn { "$ws received update for unknown server order: $orderItem" }
+                        continue
+                    }
+
+                    val asset = assetMap[orderItem.symbol]
+
+                    if (asset == null) {
+                        logger.warn("$ws Received execution for unknown symbol: ${orderItem.symbol}")
+                        return
+                    }
+
+
+                    val accountOrder = _account.getOrder(rqOrderId) ?: continue
+
+                    when (orderItem.orderStatus) {
                         bybit.sdk.shared.OrderStatus.New -> {
                             // amend order comes here.
                             // it was found in our placedOrders map, so must have already existed
@@ -365,53 +390,59 @@ class ByBitBroker(
                         }
 
                         bybit.sdk.shared.OrderStatus.Filled -> {
-                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.COMPLETED)
+                            logger.debug { "$ws order Filled." }
+                            // execution also might also update the order..
+
+//                            val filledTrades = _account.trades.toList().filter { it.orderId == rqOrderId }
+//                            handleTradeExecution(TradeExecution.fromFilledOrder(asset, orderItem, filledTrades))
                         }
 
                         bybit.sdk.shared.OrderStatus.PartiallyFilled -> {
-//                            if (order.orderType == OrderType.Market) {
-//                                logger.trace("order.cumExecValue: " + order.cumExecValue)
-//                                _account.updateOrder(state, Instant.now(), OrderStatus.COMPLETED)
-//                            }
+                            logger.debug { "$ws order PartiallyFilled." }
+
+//                            val filledTrades = _account.trades.toList().filter { it.orderId == rqOrderId }
+//                            handleTradeExecution(TradeExecution.fromFilledOrder(asset, orderItem, filledTrades))
 
                         }
 
                         bybit.sdk.shared.OrderStatus.Cancelled,
                         bybit.sdk.shared.OrderStatus.PartiallyFilledCanceled
                         -> {
-                            logger.debug {
-                                brightBlue(
-                                    "WS: cancelled accountOrder (${accountOrder.id}): ${yellow(order.rejectReason)} " + gray(
-                                        order.orderLinkId
-                                    )
-                                )
-                            }
-                            when (order.rejectReason) {
-                                "EC_PostOnlyWillTakeLiquidity" -> {
-                                    _account.rejectOrder(accountOrder, Instant.now())
-                                }
-
-                                else -> {
-                                    _account.updateOrder(accountOrder, Instant.now(), OrderStatus.CANCELLED)
-                                }
-                            }
+//                            logger.debug {
+//                                brightBlue(
+//                                    "$ws cancelled accountOrder (${accountOrder.id}): ${yellow(order.rejectReason)} " + gray(
+//                                        order.orderLinkId
+//                                    )
+//                                )
+//                            }
+//                            when (order.rejectReason) {
+//                                "EC_PostOnlyWillTakeLiquidity" -> {
+//                                    _account.rejectOrder(accountOrder, Instant.now())
+//                                }
+//
+//                                else -> {
+//                                    _account.updateOrder(accountOrder, Instant.now(), OrderStatus.CANCELLED)
+//                                }
+//                            }
 
                         }
 
 //                bybit.sdk.shared.OrderStatus.Exp ->
 //                    _account.updateOrder(state, Instant.now(), OrderStatus.EXPIRED)
 
-                        bybit.sdk.shared.OrderStatus.Rejected ->
-                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.REJECTED)
+                        bybit.sdk.shared.OrderStatus.Rejected -> {
+                            logger.debug { "$ws server rejects order: $orderItem" }
+                            _account.rejectOrder(accountOrder, Instant.now())
+                        }
 
                         else -> {
                             // NOTE: an amended order will show up here with OrderStatus "New"
                             logger.debug(
-                                "WS update ( price: ${(accountOrder as LimitOrder).limit} ) with orderLinkId: " + gray(
-                                    order.orderLinkId
+                                "$ws ( price: ${(accountOrder as LimitOrder).limit} ) with orderLinkId: " + gray(
+                                    orderItem.orderLinkId
                                 )
                             )
-                            _account.updateOrder(accountOrder, Instant.now(), OrderStatus.ACCEPTED)
+                            _account.acceptOrder(accountOrder, Instant.now())
                         }
                     }
                 }
@@ -427,23 +458,25 @@ class ByBitBroker(
 
                         // WARNING: be sure to sync with what's happening in the WS wallet updates too!
 
-                        val p = cyan("WS:")
 
                         val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
-                        logger.debug("$p walletBalance: ${blue(walletBalance.toString())}")
+                        logger.debug("$ws walletBalance: ${blue(walletBalance.toString())}")
 
                         val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
-                        logger.debug("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+                        logger.debug("$ws totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
 
                         val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
-                        logger.debug("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+                        logger.debug("$ws totalOrderIM: ${yellow(totalOrderIM.toString())}")
+
+//                        val totalPositionMM = Amount(baseCurrency, coinItem.totalPositionMM.toDouble())
+//                        logger.debug("$ws totalPositionMM: ${yellow(totalPositionMM.toString())}")
 
                         val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
-                        logger.debug("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+                        logger.debug("$ws availableToWithdraw: ${green(availableToWithdraw.toString())}")
 
 
 //                        val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
-//                        logger.debug("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
+//                        logger.debug("$ws availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
 
                         // -- Equity = Wallet Balance + Unrealized P&L (in Mark Price)
                         //val equity = coinItem.equity.toDouble()
@@ -458,7 +491,13 @@ class ByBitBroker(
                         val cash = walletBalance.value
                         val existingCashAmount = _account.cash.convert(baseCurrency)
                         if (existingCashAmount != walletBalance) {
-                            logger.debug("$p _account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                            logger.debug(
+                                "$ws _account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${
+                                    brightYellow(
+                                        walletBalance.value.toString()
+                                    )
+                                })"
+                            )
                             _account.cash.set(baseCurrency, cash)
                         }
 
@@ -494,11 +533,20 @@ class ByBitBroker(
 
                 message.data.forEach {
 
+                    val asset = assetMap[it.symbol]
+
+                    if (asset == null) {
+                        logger.warn("$ws Received execution for unknown symbol: ${it.symbol}")
+                        return
+                    }
+
                     when (it.execType) {
-                        ExecType.Trade -> executionUpdateFromWebsocket(it)
+                        ExecType.Trade -> handleTradeExecution(
+                            TradeExecution.fromExecutionItem(asset, it)
+                        )
 
                         else -> {
-                            logger.warn("execution type ${it.execType} not yet handled")
+                            logger.warn("T: execution type ${it.execType} not yet handled")
                             return
                         }
                     }
@@ -531,7 +579,7 @@ class ByBitBroker(
             val sign = if (positionItem.side == Side.Sell) -1 else 1
             val serverSize = Size(positionItem.size.toDouble().times(sign))
 
-            val serverMargin = positionItem.positionBalance.toDouble()
+//            val serverMargin = positionItem.positionBalance.toDouble()
 
             val newPosition = Position(
                 asset,
@@ -541,16 +589,7 @@ class ByBitBroker(
                 lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
 //                leverage = positionItem.leverage.toDouble(),
             )
-
-            val calculatedMargin = newPosition.totalCost.absoluteValue.value / positionItem.leverage.toDouble()
-
-            val difference = abs(serverMargin - calculatedMargin)
-            val percentDifference = (difference / serverMargin) * 100
-
-            val threshold = 0.25
-            if (percentDifference > threshold) {
-                logger.warn("Server reported margin(${serverMargin}) and calculated margin(${calculatedMargin}) exceeds threshold ($threshold): $percentDifference")
-            }
+            logger.warn("$ws position update: ${brightYellow(newPosition.toString())}")
             _account.setPosition(
                 newPosition
             )
@@ -580,29 +619,51 @@ class ByBitBroker(
 
 
             if (ordersOpenResponse.result.list.size < 50) {
-                val openOrderLinkIds = ordersOpenResponse.result.list.map { it.orderLinkId }
+                val serverOrdersByOrderLinkId = ordersOpenResponse.result.list.associateBy { it.orderLinkId }
 
                 placedOrders.entries.forEach {
                     val orderState = _account.getOrderState(it.value)
-
-                    if (orderState != null
-                        && !openOrderLinkIds.contains(it.key)
-                    ) {
+                    if (orderState != null) {
+                        val matchingServerOrder = serverOrdersByOrderLinkId[it.key]
                         val now = Instant.now()
-                        if (orderState.status != OrderStatus.INITIAL
-                            && orderState.openedAt.isAfter(now.plusSeconds(2))) { // sometimes server isn't aware immediately!
-                            logger.warn(
-                                "Completing order that existed in _account.openOrders, but was not found on server:\n "
-                                        + "${orderState.order} "
-                            )
-                            _account.updateOrder(orderState.order, now, OrderStatus.COMPLETED)
-                        } else {
-                            // if we have some old order stuck in INITIAL status, maybe reject it? Don't have create time...
+                        if (matchingServerOrder != null) {
+                            val singleOrder = orderState.order as LimitOrder
+                            val leavesQty = matchingServerOrder.leavesQty.toInt()
+                            if (leavesQty != singleOrder.size.absoluteValue.toDouble().roundToInt()) {
 
-                            logger.warn(
-                                "Found INITIAL order that existed in _account.openOrders, but was not found on server:\n "
-                                        + "${orderState.order} ..doing nothing."
-                            )
+                                val newSize = Size(leavesQty * singleOrder.size.sign)
+                                val newOrder = LimitOrder(
+                                    orderState.order.asset,
+                                    newSize,
+                                    singleOrder.limit,
+                                    singleOrder.tif, singleOrder.tag
+                                )
+                                newOrder.id = singleOrder.id
+                                logger.warn(
+                                    "Server order leavesQty($leavesQty) different from local($newSize)." +
+                                            " updating _account order. orderLinkId: ${gray(it.key)}"
+                                )
+                                _account.updateOrder(newOrder, now, orderState.status)
+                            }
+                        } else { // couldn't find our placed order on the server
+
+                            if (orderState.status != OrderStatus.INITIAL
+                                && orderState.openedAt.isBefore(now.minusSeconds(2))
+                            ) { // sometimes server isn't aware immediately!
+                                logger.warn(
+                                    "Completing order that existed in _account.openOrders, but was not found on server:\n "
+                                            + "${orderState.order} "
+                                )
+                                _account.completeOrder(orderState.order, now)
+                            } else {
+                                // if we have some old order maybe stuck in INITIAL status, maybe reject it? Don't have create time...
+
+                                logger.warn(
+                                    "Found order with state (${orderState.status}) existing in _account.openOrders, but not found on server:\n "
+                                            + "${orderState.order} ..doing nothing."
+                                )
+
+                            }
                         }
                     }
                 }
@@ -621,29 +682,37 @@ class ByBitBroker(
 
             // WARNING: be sure to sync with what's happening in the WS wallet updates too!
 
-            val p = cyan("API:")
 
             val walletBalance = Amount(baseCurrency, coinItem.walletBalance.toDouble())
-            logger.debug("$p walletBalance: ${blue(walletBalance.toString())}")
+            logger.debug("$api walletBalance: ${blue(walletBalance.toString())}")
 
             val totalPositionIM = Amount(baseCurrency, coinItem.totalPositionIM.toDouble())
-            logger.debug("$p totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
+            logger.debug("$api totalPositionIM: ${brightWhite(totalPositionIM.toString())}")
 
             val totalOrderIM = Amount(baseCurrency, coinItem.totalOrderIM.toDouble())
-            logger.debug("$p totalOrderIM: ${yellow(totalOrderIM.toString())}")
+            logger.debug("$api totalOrderIM: ${yellow(totalOrderIM.toString())}")
+
+//            val totalPositionMM = Amount(baseCurrency, coinItem.totalPositionMM.toDouble())
+//            logger.debug("$api totalPositionMM: ${yellow(totalPositionMM.toString())}")
 
             val availableToWithdraw = Amount(baseCurrency, coinItem.availableToWithdraw.toDouble())
-            logger.debug("$p availableToWithdraw: ${green(availableToWithdraw.toString())}")
+            logger.debug("$api availableToWithdraw: ${green(availableToWithdraw.toString())}")
 
 //            val availableToBorrow = Amount(baseCurrency, coinItem.availableToBorrow.toDouble())
-//            logger.debug("$p availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
+//            logger.debug("$api availableToBorrow: ${green(availableToBorrow.toString())} (~ account.buyingPower) (NOT SET)")
 
             val unrealizedPnL = coinItem.unrealisedPnl.toDouble()
 
             val cash = walletBalance.value
             val existingCashAmount = _account.cash.convert(baseCurrency)
             if (existingCashAmount.value != cash) {
-                logger.debug("_account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${brightYellow(walletBalance.value.toString())})")
+                logger.debug(
+                    "_account.cash.set(${dim(yellow(existingCashAmount.toString()))} → ${
+                        brightYellow(
+                            walletBalance.value.toString()
+                        )
+                    })"
+                )
                 _account.cash.set(baseCurrency, cash)
             }
         }
@@ -663,48 +732,75 @@ class ByBitBroker(
 //        return currentPos.realizedPNL(position)
 //    }
 
-    private fun executionUpdateFromWebsocket(execution: ByBitWebSocketMessage.ExecutionItem) {
+    private fun handleTradeExecution(execution: TradeExecution) {
 
-        val sign = if (execution.side == Side.Buy) 1 else -1
 
-        val execPrice = execution.execPrice.toDouble()
+        val execPrice = execution.execPrice
 
-        val execSize = Size(execution.execQty) * sign
+        val execSize = execution.execSize
 
-        val pre = yellow("WS:")
+        val asset = execution.asset
 
-        logger.debug(
-            "$pre EXECUTED ${execution.orderType} ${execution.side} "
+        logger.warn(
+            "$ws EXECUTED ${execution.orderType} "
                     + cyan(execSize.toString())
                     + " @ ${brightBlue(execPrice.toString())} "
                     + gray(execution.orderLinkId)
         )
 
-        val asset = assetMap[execution.symbol]
-
-        if (asset == null) {
-            logger.warn("$pre Received execution for unknown symbol: ${execution.symbol}")
-            return
-        }
 
         // Calculate the fees that apply to this execution
-        val feeAmount = Amount(asset.currency, execution.execFee.toDouble())
-        logger.debug("$pre _account.cash (before): ${brightYellow(_account.cash.toString())}")
-        logger.debug("$pre feeAmount: ${brightYellow(feeAmount.toString())}")
+
+        logger.debug("$ws _account.cash (before): ${brightYellow(_account.cash.toString())}")
+        logger.debug("$ws feeAmount: ${brightYellow(execution.feeAmount.toString())}")
 //        _account.cash.withdraw(feeAmount)
 
         val rqOrderId = placedOrders[execution.orderLinkId]
 
-        val executionInstant = Instant.ofEpochMilli(execution.execTime.toLong())
+        val executionInstant = execution.execInstant
 
         if (rqOrderId !== null) {
             val rqOrder = _account.getOrder(rqOrderId)
-            if (rqOrder !== null && execution.leavesQty == "0") {
-                logger.debug("$pre Execution leaves 0 qty, update order status to completed")
-                _account.completeOrder(rqOrder, executionInstant)
+            val now = Instant.now()
+            when (rqOrder) {
+                is LimitOrder -> {
+                    if (execution.leavesQty == "0") {
+                        logger.debug("$ws Execution leaves 0 qty, update order status to completed")
+                        _account.completeOrder(rqOrder, executionInstant)
+                    } else {
+                        logger.warn("Leaves non-zero qty: ${yellow(execution.leavesQty)}")
+                        val newOrder = LimitOrder(
+                            rqOrder.asset,
+                            Size(execution.leavesQty.toDouble() * rqOrder.size.sign),
+                            rqOrder.limit,
+                            rqOrder.tif, rqOrder.tag
+                        )
+                        newOrder.id = rqOrder.id
+                        logger.warn("replacing with order: ${yellow(newOrder.toString())}")
+                        _account.acceptOrder(newOrder, now)
+                    }
+                }
+
+                is MarketOrder -> {
+                    if (execution.leavesQty == "0") {
+                        logger.warn("was a MARKET order to handle...odd")
+                        logger.debug("$ws Execution leaves 0 qty, update order status to completed")
+                        _account.completeOrder(rqOrder, executionInstant)
+                    }
+                }
+
+                null -> {
+                    logger.warn("$ws _account.getOrder(placedOrders[execution.orderLinkId ${gray(execution.orderLinkId)}])  = null | rqOrderId: $rqOrderId | NOT finishing TradeExecution")
+                    // this could happen if Execution & Order messages come in at the same time and both "complete" the order
+                    return
+                }
+
+                else -> {
+                    logger.warn("$ws unhandled order type")
+                }
             }
         } else {
-            logger.warn("$pre Received execution order not placed in system. orderLinkId : ${execution.orderLinkId}, orderId : ${execution.orderId}")
+            logger.warn("$ws Received execution order not placed in system. orderLinkId : ${execution.orderLinkId}, orderId : ${execution.orderId}")
         }
 
         val execPos = Position(asset, execSize, execPrice)
@@ -716,25 +812,25 @@ class ByBitBroker(
         val newPosition = existingPos + execPos // simply calculate size and avgPrice if adding to position
         if (newPosition.closed) p.remove(asset) else p[asset] = newPosition
 
-        val pnl = existingPos.realizedPNL(execPos) - feeAmount
+        val pnl = existingPos.realizedPNL(execPos) - execution.feeAmount
 
         val newTrade = Trade(
             executionInstant,
             asset,
             execSize,
             execPrice,
-            feeAmount.value,
+            execution.feeAmount.value,
             pnl.convert(asset.currency).value,
             rqOrderId ?: -1
         )
 
-        logger.debug("$pre pnl: ${brightYellow(pnl.toString())} (incl. fee to close)")
+        logger.debug("$ws pnl: ${brightYellow(pnl.toString())} (incl. fee to close)")
 
         _account.addTrade(newTrade)
 
         _account.cash.deposit(pnl)
 
-        logger.debug("$pre _account.cash (after): ${brightYellow(_account.cash.toString())}")
+        logger.debug("$ws _account.cash (after): ${brightYellow(_account.cash.toString())}")
 
     }
 
@@ -804,7 +900,7 @@ class ByBitBroker(
      */
     private fun cancelOrder(cancellation: CancelOrder) {
         val orderLinkId = placedOrders.entries.find { it.value == cancellation.order.id }?.key
-        logger.debug("Cancelling $orderLinkId")
+        logger.warn("cancelOrder(): ${red(cancellation.toString())} ${gray(orderLinkId.toString())}")
 
         if (orderLinkId == null) {
             logger.error("Unable to find order.id in placedOrders: ${cancellation.order.id}")
@@ -816,15 +912,22 @@ class ByBitBroker(
 
             try {
                 val order = cancellation.order
-                client.orderClient.cancelOrderBlocking(
+
+                val resp = client.orderClient.cancelOrderBlocking(
                     CancelOrderParams(
                         category,
                         symbol = order.asset.symbol,
                         orderLinkId = orderLinkId
                     )
                 )
-                _account.completeOrder(cancellation, Instant.now())
-//                _account.updateOrder(cancellation.order, Instant.now(), OrderStatus.CANCELLED) // handled by WS
+
+                logger.warn("cancelled ${white(resp.result.orderId)} | ${gray(resp.result.orderLinkId)}")
+                val now = Instant.now()
+                _account.completeOrder(cancellation, now)
+                val orderToCancel = _account.getOrder(cancellation.order.id)
+                orderToCancel?.let {
+                    _account.updateOrder(orderToCancel, now, OrderStatus.CANCELLED)
+                }
 
             } catch (e: CustomResponseException) {
                 logger.warn {
@@ -838,8 +941,9 @@ class ByBitBroker(
                 val now = Instant.now()
                 when (e.retCode) {
                     110001 -> { // order does not exist on server
-                        if (_account.getOrder(accountOrder.order.id) !== null) {
-                            logger.warn("Completing order that was to be amended b/c did not exist on server")
+                        val freshAccountOrder = _account.getOrderState(accountOrder.order.id)
+                        if (freshAccountOrder !== null && freshAccountOrder.openedAt.isBefore(now.minusMillis(200))) {
+                            logger.warn("Completing order that was to be cancelled b/c did not exist on server")
                             _account.completeOrder(accountOrder.order, now)
                         }
                         _account.rejectOrder(accountOrder, now)
@@ -878,7 +982,7 @@ class ByBitBroker(
                                     _account.updateOrder(it, Instant.now(), OrderStatus.CANCELLED)
                                 }
                                 cancelOrders.firstOrNull { it.order.id == id }?.let { cancelOrder ->
-                                    _account.updateOrder(cancelOrder, Instant.now(), OrderStatus.COMPLETED)
+                                    _account.completeOrder(cancelOrder, Instant.now())
                                 }
                             }
                         }
@@ -930,7 +1034,7 @@ class ByBitBroker(
             val accountOrder = _account.getOrder(orderId) ?: return@executeFun
 
             try {
-                client.orderClient.placeOrderBlocking(
+                val resp = client.orderClient.placeOrderBlocking(
                     PlaceOrderParams(
                         category,
                         symbol,
@@ -950,13 +1054,18 @@ class ByBitBroker(
 
                 _account.acceptOrder(accountOrder, Instant.now())
 
-                logger.debug {
-                    "Server accepts create ${yellow(accountOrder.toString())} ${
+                logger.warn {
+                    "Server accepts create ${yellow(accountOrder.toString())} orderId: ${
+                        white(
+                            resp.result.orderId
+                        )
+                    } | orderLinkId: ${
                         gray(
                             orderLinkId
                         )
                     }"
                 }
+
             } catch (e: CustomResponseException) {
                 logger.warn {
                     "Failed (${red(e.message)}) create order: ${
@@ -979,6 +1088,7 @@ class ByBitBroker(
                     }
 
                     else -> {
+                        logger.warn { "rejecting order. retCode: ${e.retCode}, message: ${e.message}" }
                         _account.rejectOrder(accountOrder, now)
                     }
                 }
@@ -1087,7 +1197,7 @@ class ByBitBroker(
                 val qty = when (updatedLimitOrder.size == originalLimitOrder.size) {
                     true -> null
                     false -> {
-                        logger.info(
+                        logger.debug(
                             "Amending order qty: ${dim(yellow(originalLimitOrder.size.toString()))} → ${
                                 brightYellow(
                                     updatedLimitOrder.size.toString()
@@ -1116,76 +1226,129 @@ class ByBitBroker(
                     val updateAOrder = _account.getOrder(updateOrderId) as UpdateOrder? ?: return@executeFun
 
                     if (_account.getOrder(updateAOrder.order.id) == null) {
-                        logger.warn("Rejecting amend for order that is no longer open")
-                        _account.rejectOrder(updateAOrder, Instant.now())
-                    }
-                    val timeSpent = measureTimeMillis {
-
-                        try {
-                            client.orderClient.amendOrderBlocking(
-                                AmendOrderParams(
-                                    category,
-                                    symbol,
-                                    orderLinkId = orderLinkId,
-                                    qty = qty,
-                                    price = price
+                        logger.warn(
+                            "_account.getOrder(updateAOrder.order.id ${gray(updateAOrder.order.id.toString())}) == null | Rejecting ${
+                                dim(
+                                    yellow(updateAOrder.toString())
                                 )
-                            )
+                            }"
+                        )
+                        _account.rejectOrder(updateAOrder, Instant.now())
+                    } else {
 
-                            val now = Instant.now()
-                            _account.updateOrder(updateAOrder.update, now, OrderStatus.ACCEPTED)
-                            _account.completeOrder(updateAOrder, now)
+                        val timeSpent = measureTimeMillis {
 
-                            logger.debug {
-                                "Server accepts amend ${brightYellow(updateAOrder.toString())} ${gray(orderLinkId)}"
-                            }
-                            //placedOrders[orderLinkId] = updateOrder.update.id // turns out this isn't needed, same id
+                            try {
+                                val resp = client.orderClient.amendOrderBlocking(
+                                    AmendOrderParams(
+                                        category,
+                                        symbol,
+                                        orderLinkId = orderLinkId,
+                                        qty = qty,
+                                        price = price
+                                    )
+                                )
 
-                        } catch (e: CustomResponseException) {
-                            logger.warn {
-                                "Failed (${red(e.message)}) amending order: ${yellow(updateAOrder.toString())}"
-                            }
+                                val now = Instant.now()
+                                _account.acceptOrder(updateAOrder.update, now)
+                                _account.completeOrder(updateAOrder, now)
 
-                            val now = Instant.now()
-                            when (e.retCode) {
-                                110001 -> { // order does not exist on server
-                                    _account.rejectOrder(updateAOrder, now)
-                                    if (_account.getOrder(updateAOrder.order.id) !== null) {
-                                        logger.warn("Completing order that was to be amended b/c did not exist on server")
-                                        _account.completeOrder(updateAOrder.order, now)
+                                logger.warn {
+                                    "Server accepts amend ${yellow(updateAOrder.toString())} orderId: ${
+                                        white(
+                                            resp.result.orderId
+                                        )
+                                    } | orderLinkId: ${
+                                        gray(
+                                            orderLinkId
+                                        )
+                                    }"
+                                }
+                                //placedOrders[orderLinkId] = updateOrder.update.id // turns out this isn't needed, same id
+
+                            } catch (e: CustomResponseException) {
+                                logger.warn {
+                                    "Failed (${red(e.message)}) amending order: ${yellow(updateAOrder.toString())}"
+                                }
+
+                                val now = Instant.now()
+                                when (e.retCode) {
+                                    110001 -> { // order does not exist on server
+
+                                        logger.warn("rejecting update for order that did not exist on server..will 10ms wait before completing")
+                                        _account.rejectOrder(updateAOrder, now)
+
+                                        runBlocking {
+                                            delay(10.milliseconds)
+                                            val freshAccountOrder = _account.getOrderState(updateAOrder.order.id)
+                                            if (freshAccountOrder !== null) {
+                                                logger.warn("Order that was to be amended did not exist on server")
+                                                //TODO: MAYBE handle trade execution ???
+//                                                handleTradeExecution(TradeExecution(
+//                                                    updateAOrder.asset,
+//                                                    "",
+//
+//                                                ))
+                                                _account.completeOrder(updateAOrder.order, now)
+
+                                            }
+                                        }
+                                    }
+
+                                    10001 -> {
+                                        logger.warn("parameter error, maybe amend is not different from existing")
+                                        _account.rejectOrder(updateAOrder, now)
+
+                                        val origOrder =
+                                            _account.getOrder(updateAOrder.order.id) as LimitOrder? ?: return@executeFun
+
+                                        if ((updateAOrder.update as LimitOrder).size != origOrder.size) {
+                                            val newOrder = LimitOrder(
+                                                origOrder.asset,
+                                                (updateAOrder.update as LimitOrder).size,
+                                                origOrder.limit,
+                                                origOrder.tif, origOrder.tag
+                                            )
+                                            newOrder.id = origOrder.id
+                                            logger.warn(
+                                                "Replacing existing _account order size to match server. ${
+                                                    yellow(
+                                                        dim(origOrder.toString())
+                                                    )
+                                                } -> ${yellow(dim(newOrder.toString()))}"
+                                            )
+                                            _account.updateOrder(newOrder, Instant.now(), OrderStatus.ACCEPTED)
+                                        }
+
+                                    }
+
+                                    110079 -> {
+                                        logger.warn(e.retMsg)
+                                        _account.rejectOrder(updateAOrder, now)
+                                    }
+
+                                    else -> {
+                                        logger.warn("Unhandled error code, rejecting UpdateOrder")
+                                        _account.rejectOrder(updateAOrder, now)
                                     }
                                 }
 
-                                10001 -> {
-                                    logger.warn("parameter error, maybe amend is not different from existing")
-                                    _account.rejectOrder(updateAOrder, now)
-                                }
-
-                                110079 -> {
-                                    logger.warn(e.retMsg)
-                                    _account.rejectOrder(updateAOrder, now)
-                                }
-
-                                else -> {
-                                    _account.rejectOrder(updateAOrder, now)
-                                }
+                            } catch (e: RateLimitReachedException) {
+                                logger.warn(e.message)
+                                _account.rejectOrder(updateAOrder, Instant.now())
+                            } catch (e: Exception) {
+                                _account.rejectOrder(updateAOrder, Instant.now())
+                                logger.error(e.message)
                             }
-
-                        } catch (e: RateLimitReachedException) {
-                            logger.warn(e.message)
-                            _account.rejectOrder(updateAOrder, Instant.now())
-                        } catch (e: Exception) {
-                            _account.rejectOrder(updateAOrder, Instant.now())
-                            logger.error(e.message)
                         }
+                        logger.debug(
+                            "Spent ${
+                                brightBlue(
+                                    timeSpent.toString()
+                                )
+                            } amending order"
+                        )
                     }
-                    logger.info(
-                        "Spent ${
-                            brightBlue(
-                                timeSpent.toString()
-                            )
-                        } amending order"
-                    )
                 }
             }
 

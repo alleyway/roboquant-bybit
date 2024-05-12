@@ -88,7 +88,7 @@ class MarginAccountInverse(
 
         // Attempt to replicate ByBit's totalPositionIM in the wallet API
         val totalPositionIM = positions.sumOf {
-            it.calcMarginUsage(leverage, takerRate)
+            it.calcMarginUsage(takerRate, leverage)
         }.convert(currency, time)
 
 //        logger.debug("totalPositionIM = ${brightWhite(totalPositionIM.toString())}")

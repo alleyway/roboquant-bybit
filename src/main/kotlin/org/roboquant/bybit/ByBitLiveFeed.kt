@@ -6,6 +6,7 @@ import bybit.sdk.shared.Side
 import bybit.sdk.shared.toCategory
 import bybit.sdk.websocket.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import org.roboquant.bybit.ByBit.getRestClient
 import org.roboquant.common.*
 import org.roboquant.feeds.*
@@ -52,10 +53,10 @@ class ByBitLiveFeed(
         wsClient = ByBit.getWebSocketClient(wsOptions)
 
         val scope = CoroutineScope(Dispatchers.Default + Job())
-
         scope.launch {
             wsClient.connect(listOf())
-            val channel = wsClient.getWebSocketEventChannel()
+            // Buffer X amount. Drop older "public" data: trades/tickers/orderbook/liquidations
+            val channel = wsClient.getWebSocketEventChannel(10, BufferOverflow.DROP_OLDEST)
             while (true) {
                 val msg = channel.receive()
                 (this@ByBitLiveFeed::handler)(msg)

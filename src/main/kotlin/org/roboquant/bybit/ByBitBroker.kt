@@ -1061,7 +1061,7 @@ class ByBitBroker(
 
                 _account.acceptOrder(accountOrder, Instant.now())
 
-                logger.warn {
+                logger.debug {
                     "Server accepts create ${yellow(accountOrder.toString())} orderId: ${
                         white(
                             resp.result.orderId
@@ -1260,7 +1260,7 @@ class ByBitBroker(
                                 _account.acceptOrder(updateAOrder.update, now)
                                 _account.completeOrder(updateAOrder, now)
 
-                                logger.warn {
+                                logger.debug {
                                     "Server accepts amend ${yellow(updateAOrder.toString())} orderId: ${
                                         white(
                                             resp.result.orderId

@@ -251,15 +251,15 @@ class ByBitBroker(
 
                     val sign = if (serverPosition.side == Side.Sell) -1 else 1
                     val serverSize = Size(serverPosition.size.toDouble().times(sign))
-                    val serverLeverage = serverPosition.leverage.toDouble()
+                    //val serverLeverage = serverPosition.leverage.toDouble()
 
                     val currentPos = p.getOrDefault(asset, Position.empty(asset))
 
                     if (serverSize.iszero && p.containsKey(asset)) {
                         p.remove(asset)
                     } else {
-                        if (currentPos.size != serverSize || currentPos.leverage != serverLeverage) {
-                            logger.warn { "Local position (${currentPos.size})/leverage (${currentPos.leverage}) Different from server(${serverSize})/(${serverLeverage}) when syncing" }
+                        if (currentPos.size != serverSize) {
+                            logger.warn { "Local position (${currentPos.size}) Different from server(${serverSize}) when syncing" }
                             _account.setPosition(
                                 Position(
                                     asset,
@@ -268,7 +268,7 @@ class ByBitBroker(
                                     mktPrice = serverPosition.markPrice.toDouble(),
                                     lastUpdate = Instant.ofEpochMilli(serverPosition.updatedTime.toLong()),
 //                                margin = serverPosition.positionIM.toDouble()
-                                        leverage = serverLeverage,
+//                                        leverage = serverLeverage,
                                 )
                             )
                         }
@@ -330,7 +330,7 @@ class ByBitBroker(
 
     private fun handler(message: ByBitWebSocketMessage) {
 
-        logger.warn("${magenta("WS:")} ${message::class.simpleName}")
+        logger.debug("${magenta("WS:")} ${message::class.simpleName}")
 
         when (message) {
 
@@ -347,7 +347,7 @@ class ByBitBroker(
                 val orderItems = message.data.sortedBy { it.updatedTime }
 
                 for (orderItem in orderItems) {
-                    logger.warn { "$ws server order: $orderItem" }
+                    logger.debug { "$ws server order: $orderItem" }
 
                     val rqOrderId = placedOrders[orderItem.orderLinkId]
 
@@ -596,7 +596,7 @@ class ByBitBroker(
                 lastUpdate = Instant.ofEpochMilli(positionItem.updatedTime.toLong()),
 //                leverage = positionItem.leverage.toDouble(),
             )
-            logger.warn("$ws position update: ${brightYellow(newPosition.toString())}")
+            logger.debug("$ws position update: ${brightYellow(newPosition.toString())}")
             _account.setPosition(
                 newPosition
             )

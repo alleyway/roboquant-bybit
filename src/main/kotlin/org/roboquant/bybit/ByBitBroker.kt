@@ -541,10 +541,17 @@ class ByBitBroker(
                     }
 
                     when (it.execType) {
-                        ExecType.Trade -> handleTradeExecution(
-                            TradeExecution.fromExecutionItem(asset, it)
-                        )
+                        ExecType.Trade -> {
+                            handleTradeExecution(TradeExecution.fromExecutionItem(asset, it))
+                        }
+                        ExecType.Funding -> {
 
+                            val fundingFee = it.execFee.toDouble()
+                            val execPrice = it.execPrice.toDouble()
+                            val usdValue = fundingFee * execPrice
+                            logger.warn("T: Funding fee: $fundingFee ($${usdValue}) , but not yet handled")
+                            // handleTradeExecution(TradeExecution.fromFunding(asset, it))
+                        }
                         else -> {
                             logger.warn("T: execution type ${it.execType} not yet handled")
                             return

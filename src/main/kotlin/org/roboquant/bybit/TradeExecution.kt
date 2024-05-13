@@ -69,5 +69,20 @@ class TradeExecution (
                 exec.leavesQty,
                 Instant.ofEpochMilli(exec.execTime.toLong()))
         }
+
+        fun fromFunding(asset: Asset, exec: ByBitWebSocketMessage.ExecutionItem): TradeExecution {
+            val sign = if (exec.side == Side.Buy) 1 else -1
+
+            return TradeExecution(
+                asset,
+                exec.orderId,
+                exec.execPrice.toDouble(),
+                Size(exec.execQty).times(sign),
+                exec.orderLinkId,
+                exec.orderType,
+                Amount(asset.currency, exec.execFee.toDouble()),
+                exec.leavesQty,
+                Instant.ofEpochMilli(exec.execTime.toLong()))
+        }
     }
 }
